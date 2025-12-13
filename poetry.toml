@@ -1,0 +1,9 @@
+[virtualenvs]
+in-project = true
+
+['authors']
+name = "Shantanu Mane"
+email = "Shantanu Mane <shantanu.mane.200@outlook.com>"
+
+['dependencies']
+python = ">=3.11"

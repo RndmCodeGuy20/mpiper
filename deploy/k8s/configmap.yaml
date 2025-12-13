@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mpiper-config
+  namespace: mpiper
+data:
+  # Server Configuration
+  SERVER_HOST: "0.0.0.0"
+  SERVER_PORT: "8080"
+  ENV: "production"
+
+  # Database Configuration
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "mpiper"
+  DB_SSLMODE: "require"
+
+  # Redis Configuration
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+
+  # Storage Configuration
+  STORAGE_PROVIDER: "gcp"
+  GCS_BUCKET: "mpiper-media-production"
+
+  # Worker Configuration
+  TEMP_DIR: "/tmp/mpiper"
+  STREAM_NAME: "media:jobs"
+  JOB_POLL_INTERVAL: "1"
+

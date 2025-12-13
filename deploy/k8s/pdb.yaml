@@ -1,0 +1,22 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mpiper-api-pdb
+  namespace: mpiper
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: mpiper-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mpiper-worker-pdb
+  namespace: mpiper
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: mpiper-worker
+

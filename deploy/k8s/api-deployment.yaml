@@ -1,0 +1,179 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mpiper-api
+  namespace: mpiper
+  labels:
+    app: mpiper-api
+    component: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mpiper-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: mpiper-api
+        component: backend
+    spec:
+      containers:
+      - name: mpiper-api
+        image: mpiper-api:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: SERVER_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: SERVER_HOST
+        - name: SERVER_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: SERVER_PORT
+        - name: ENV
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: ENV
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: mpiper-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mpiper-secrets
+              key: DB_PASSWORD
+        - name: DB_SSLMODE
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: DB_SSLMODE
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: REDIS_PORT
+        - name: REDIS_DB
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: REDIS_DB
+        - name: STORAGE_PROVIDER
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: STORAGE_PROVIDER
+        - name: GCS_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: GCS_BUCKET
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /secrets/gcs/key.json
+        volumeMounts:
+        - name: gcs-credentials
+          mountPath: /secrets/gcs
+          readOnly: true
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+      volumes:
+      - name: gcs-credentials
+        secret:
+          secretName: gcs-credentials
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mpiper-api-service
+  namespace: mpiper
+  labels:
+    app: mpiper-api
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: mpiper-api
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mpiper-api-hpa
+  namespace: mpiper
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mpiper-api
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+

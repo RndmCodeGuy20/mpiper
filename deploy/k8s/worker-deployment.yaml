@@ -1,0 +1,153 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mpiper-worker
+  namespace: mpiper
+  labels:
+    app: mpiper-worker
+    component: worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mpiper-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: mpiper-worker
+        component: worker
+    spec:
+      containers:
+      - name: mpiper-worker
+        image: mpiper-worker:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: mpiper-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mpiper-secrets
+              key: DB_PASSWORD
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: REDIS_HOST
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: REDIS_PORT
+        - name: REDIS_DB
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: REDIS_DB
+        - name: STORAGE_PROVIDER
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: STORAGE_PROVIDER
+        - name: GCS_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: GCS_BUCKET
+        - name: TEMP_DIR
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: TEMP_DIR
+        - name: STREAM_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: STREAM_NAME
+        - name: JOB_POLL_INTERVAL
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: JOB_POLL_INTERVAL
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /secrets/gcs/key.json
+        volumeMounts:
+        - name: gcs-credentials
+          mountPath: /secrets/gcs
+          readOnly: true
+        - name: temp-storage
+          mountPath: /tmp/mpiper
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "import sys; sys.exit(0)"
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: gcs-credentials
+        secret:
+          secretName: gcs-credentials
+      - name: temp-storage
+        emptyDir:
+          sizeLimit: 10Gi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mpiper-worker-hpa
+  namespace: mpiper
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mpiper-worker
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 75
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 85
+

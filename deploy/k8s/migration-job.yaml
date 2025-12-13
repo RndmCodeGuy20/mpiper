@@ -1,0 +1,105 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mpiper-db-migration
+  namespace: mpiper
+spec:
+  template:
+    metadata:
+      labels:
+        app: db-migration
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+      - name: wait-for-postgres
+        image: postgres:16-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready -h postgres-service -p 5432; do
+            echo "Waiting for postgres..."
+            sleep 2
+          done
+      containers:
+      - name: migrate
+        image: postgres:16-alpine
+        env:
+        - name: PGHOST
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: DB_HOST
+        - name: PGPORT
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: DB_PORT
+        - name: PGDATABASE
+          valueFrom:
+            configMapKeyRef:
+              name: mpiper-config
+              key: DB_NAME
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef:
+              name: mpiper-secrets
+              key: DB_USER
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mpiper-secrets
+              key: DB_PASSWORD
+        command:
+        - sh
+        - -c
+        - |
+          echo "Running database migrations..."
+          psql -f /migrations/001_seed.sql
+        volumeMounts:
+        - name: migrations
+          mountPath: /migrations
+      volumes:
+      - name: migrations
+        configMap:
+          name: db-migrations
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-migrations
+  namespace: mpiper
+data:
+  001_seed.sql: |
+    -- Add your migration SQL here
+    -- This should match the content from db/migrations/001_seed.sql
+    CREATE TABLE IF NOT EXISTS assets (
+      asset_id UUID PRIMARY KEY,
+      type VARCHAR(50) NOT NULL,
+      status VARCHAR(50) NOT NULL,
+      original_url TEXT,
+      mime_type VARCHAR(100),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE TABLE IF NOT EXISTS jobs (
+      job_id UUID PRIMARY KEY,
+      asset_id UUID REFERENCES assets(asset_id),
+      status VARCHAR(50) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE TABLE IF NOT EXISTS variants (
+      variant_id UUID PRIMARY KEY,
+      asset_id UUID REFERENCES assets(asset_id),
+      variant_type VARCHAR(50) NOT NULL,
+      url TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_assets_status ON assets(status);
+    CREATE INDEX IF NOT EXISTS idx_jobs_asset_id ON jobs(asset_id);
+    CREATE INDEX IF NOT EXISTS idx_variants_asset_id ON variants(asset_id);
+

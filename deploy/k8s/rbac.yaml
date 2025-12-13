@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mpiper-api
+  namespace: mpiper
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mpiper-worker
+  namespace: mpiper
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mpiper-role
+  namespace: mpiper
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mpiper-api-binding
+  namespace: mpiper
+subjects:
+- kind: ServiceAccount
+  name: mpiper-api
+  namespace: mpiper
+roleRef:
+  kind: Role
+  name: mpiper-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mpiper-worker-binding
+  namespace: mpiper
+subjects:
+- kind: ServiceAccount
+  name: mpiper-worker
+  namespace: mpiper
+roleRef:
+  kind: Role
+  name: mpiper-role
+  apiGroup: rbac.authorization.k8s.io
+
