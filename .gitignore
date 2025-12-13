@@ -1,0 +1,110 @@
+# Compiled object files
+*.o
+*.obj
+# Precompiled Headers
+*.gch
+*.pch
+# Compiled Dynamic libraries
+*.so
+*.dll
+*.dylib
+# Compiled Static libraries
+*.lib
+*.a
+# Executables
+*.exe
+*.out
+*.app
+*.elf
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+# CMake build folders
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+# Qt build files
+moc_*
+qrc_*
+ui_*
+# Code::Blocks project files
+*.depend
+*.layout
+# Visual Studio files
+*.vcxproj*
+*.sln
+*.opensdf
+*.sdf
+*.ipch
+*.user
+*.filters
+# CLion IDE files
+.idea/
+*.iml
+# Xcode files
+*.xcworkspace
+*.xcodeproj
+# Backup files
+*~
+*.bak
+*.swp
+*.tmp
+# Docker
+# Ignore Docker volumes, logs, and build artifacts
+docker-compose.override.yml
+docker-compose.local.yml
+docker-compose.dev.yml
+docker-compose.prod.yml
+.env
+.env.*
+*.env
+docker-data/
+**/docker-data/
+**/logs/
+logs/
+*.log
+# Ignore build directories
+build/
+Build/
+bin/
+Bin/
+dist/
+Dist/
+# Ignore test output
+test-output/
+*.gcda
+*.gcno
+*.gcov
+# Ignore system files
+.DS_Store
+Thumbs.db
+# Ignore node_modules if using node in Docker
+node_modules/
+# Ignore Python virtualenv if using python in Docker
+venv/
+__pycache__/
+.venv/
+# Ignore coverage reports
+coverage/
+*.lcov
+# Ignore editor files
+.vscode/
+*.code-workspace
+# Ignore generated documentation
+docs/
+doc/
+*.pdf
+# Ignore custom files
+*.secrets
+*.key
+*.pem
+# Ignore any unnecessary testing files
+tests/encoded/
+tests/verdict/
+tests/reports/
+tests/logs/
+coverage-reports/
+coverage
+API_DOCUMENTATION.md

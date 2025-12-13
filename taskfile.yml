@@ -1,0 +1,217 @@
+
+version: '3'
+
+# Variables
+vars:
+  APP_NAME: mpiper
+  BUILD_DIR: build
+  MAIN_PATH: cmd/server/main.go
+  
+  # Dynamic variables
+  BUILD_TIME:
+    sh: |
+      # Use PowerShell when available (Windows / pwsh), otherwise fallback to UTC date
+      if command -v pwsh >/dev/null 2>&1 || command -v powershell >/dev/null 2>&1; then
+        if command -v pwsh >/dev/null 2>&1; then
+          pwsh -NoProfile -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ'"
+        else
+          powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ'"
+        fi
+      else
+        date -u +%Y-%m-%dT%H:%M:%SZ
+      fi
+  GIT_COMMIT:
+    sh: |
+      git rev-parse --short HEAD 2>/dev/null || echo unknown
+  VERSION:
+    sh: toml get --toml-path mpiper.toml version
+
+  # Build flags
+  LDFLAGS: >-
+    -X 'main.Version={{.VERSION}}'
+    -X 'main.BuildTime={{.BUILD_TIME}}'
+    -X 'main.CommitHash={{.GIT_COMMIT}}'
+
+# Tasks
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  install:
+    desc: Install dependencies
+    cmds:
+      - go mod download
+      - go mod tidy
+
+  run:
+    desc: Run the application (development)
+    cmds:
+      - air -c .air.toml
+
+  dev:
+    desc: Run the application (development)
+    env:
+      LOG_LEVEL: DEBUG
+      ENV: development
+    cmds:
+      - go run -ldflags="{{.LDFLAGS}} -X 'main.Env=development'" {{.MAIN_PATH}}
+
+  staging:
+    desc: Run the application (staging)
+    env:
+      LOG_LEVEL: INFO
+      ENV: staging
+    cmds:
+      - go run -ldflags="{{.LDFLAGS}}" {{.MAIN_PATH}}
+
+  prod:
+    desc: Run the application (production)
+    env:
+      LOG_LEVEL: WARN
+      ENV: production
+    cmds:
+      - go run -ldflags="{{.LDFLAGS}}" {{.MAIN_PATH}}
+
+  build:
+    desc: Build the application
+    cmds:
+      - echo "Building {{.APP_NAME}} version {{.VERSION}}"
+      - mkdir -p {{.BUILD_DIR}}
+      - CGO_ENABLED=0 go build -ldflags="-w -s {{.LDFLAGS}}" -o {{.BUILD_DIR}}/{{.APP_NAME}}.exe {{.MAIN_PATH}}
+      - echo "Build completed {{.BUILD_DIR}}/{{.APP_NAME}}"
+
+  run-binary:
+    desc: Run the built binary
+    env:
+      LOG_LEVEL: INFO
+      ENV: production
+    cmds:
+      - ./{{.BUILD_DIR}}/{{.APP_NAME}}.exe
+
+  build-prod:
+    desc: Build the application for production
+    env:
+      ENV: production
+    cmds:
+      - task build
+
+  build-all:
+    desc: Build for all platforms
+    cmds:
+      - task: build-windows
+      - task: build-linux
+      - task: build-mac
+
+  build-windows:
+    desc: Build for Windows
+    env:
+      GOOS: windows
+      GOARCH: amd64
+    cmds:
+      - go build -ldflags="{{.LDFLAGS}}" -o {{.BUILD_DIR}}/{{.APP_NAME}}-windows-amd64.exe {{.MAIN_PATH}}
+
+  build-linux:
+    desc: Build for Linux
+    env:
+      GOOS: linux
+      GOARCH: amd64
+    cmds:
+      - go build -ldflags="{{.LDFLAGS}}" -o {{.BUILD_DIR}}/{{.APP_NAME}}-linux-amd64 {{.MAIN_PATH}}
+
+  build-mac:
+    desc: Build for macOS
+    env:
+      GOOS: darwin
+      GOARCH: amd64
+    cmds:
+      - go build -ldflags="{{.LDFLAGS}}" -o {{.BUILD_DIR}}/{{.APP_NAME}}-darwin-amd64 {{.MAIN_PATH}}
+
+  test:
+    desc: Run tests
+    cmds:
+      - gotestsum --format testname --format-icons codicons -- -v {{.CLI_ARGS}}
+
+  test-coverage:
+    desc: Run tests with coverage
+    cmds:
+      - go test -v -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - echo "✅ Coverage report - coverage.html"
+
+  lint:
+    desc: Run linter
+    cmds:
+      - golangci-lint run ./...
+
+  fmt:
+    desc: Format code
+    cmds:
+      - go fmt ./...
+      - goimports -w .
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - powershell -Command "if (Test-Path {{.BUILD_DIR}}) { Remove-Item -Recurse -Force {{.BUILD_DIR}} }"
+      - powershell -Command "if (Test-Path coverage.out) { Remove-Item coverage.out }"
+      - powershell -Command "if (Test-Path coverage.html) { Remove-Item coverage.html }"
+      - echo "✅ Cleaned build artifacts"
+
+  docker-build:
+    desc: Build Docker image
+    cmds:
+      - docker build 
+        --build-arg ENV=development 
+        --build-arg VERSION={{.VERSION}} 
+        --build-arg BUILD_TIME={{.BUILD_TIME}} 
+        --build-arg COMMIT_HASH={{.GIT_COMMIT}}
+        --build-arg HOST=0.0.0.0
+        -t {{.APP_NAME}}:{{.VERSION}} .
+
+  docker-run:
+    desc: Run Docker container
+    cmds:
+      - docker run 
+        --rm
+        -p 5010:5010 
+        --name {{.APP_NAME}}_dev
+        --env-file .env.local
+        -e DB_HOST=host.docker.internal
+        -e ENV=development
+        -e HOST=0.0.0.0
+        -e LOG_LEVEL=DEBUG
+        -e VERSION={{.VERSION}}
+        -e BUILD_TIME={{.BUILD_TIME}}
+        -e COMMIT_HASH={{.GIT_COMMIT}}
+        {{.APP_NAME}}:{{.VERSION}}
+
+  deps-update:
+    desc: Update dependencies
+    cmds:
+      - go get -u ./...
+      - go mod tidy
+
+  version:
+    desc: Show version information
+    cmds:
+      - echo "App Name       {{.APP_NAME}}"
+      - echo "Version        {{.VERSION}}"
+      - echo "Build Time     {{.BUILD_TIME}}"
+      - echo "Git Commit     {{.GIT_COMMIT}}"
+
+  all:
+    desc: Clean, build, and test
+    cmds:
+      - task: clean
+      - task: build
+      - task: test
+
+  ci:
+    desc: Run CI pipeline
+    cmds:
+      - task: fmt
+      - task: lint
+      - task: test
+      - task: build
