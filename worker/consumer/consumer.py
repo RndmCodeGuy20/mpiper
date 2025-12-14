@@ -27,8 +27,6 @@ Notes about external expectations:
 
 from __future__ import annotations
 
-import logging
-import uuid
 from typing import Dict
 
 import redis
@@ -129,12 +127,12 @@ class Consumer:
         msg_id, fields = messages[0]
 
         try:
-            # Normalise fields to a dict
+            # Normalize fields to a dict
             payload: Dict[str, str] = {k: fields[k] for k in fields}
             logger.info("message received id=%s payload=%s", msg_id, payload)
 
             body = payload.get("body")
-            logger.debug("message body: %s", body)
+            # logger.debug("message body: %s", body)
             if body:
                 # If a body field is present, it contains a JSON-encoded dict
                 import json
@@ -143,7 +141,7 @@ class Consumer:
                 payload.update(body_dict)
                 payload.pop('body')
 
-            logger.debug("normalized payload: %s", payload)
+            # logger.debug("normalized payload: %s", payload)
 
             job_id = payload.get("job_id")
             asset_id = payload.get("asset_id")
@@ -247,7 +245,7 @@ class Consumer:
         """
         with self.pg.get_pg_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT asset_id, status FROM assets WHERE asset_id = %s FOR UPDATE", (asset_id,))
+            cur.execute("SELECT asset_id, status, content_hash FROM assets WHERE asset_id = %s FOR UPDATE", (asset_id,))
             row = cur.fetchone()
 
             if not row:
@@ -255,7 +253,7 @@ class Consumer:
                 self.redis.xack(self.cfg.stream_name, self.cfg.consumer_group, msg_id)
                 return
 
-            _, status = row
+            _, status, content_hash = row
 
             # Only proceed for assets that were uploaded or are already processing.
             if status not in ("uploaded", "processing"):
