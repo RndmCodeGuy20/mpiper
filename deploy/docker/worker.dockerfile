@@ -26,11 +26,16 @@ RUN poetry install --no-dev --no-interaction --no-ansi
 # Stage 2: Runtime
 FROM python:3.11-slim
 
-# Install runtime dependencies
+# Install runtime dependencies + ffmpeg
 RUN apt-get update && apt-get install -y \
     libpq5 \
     libmagic1 \
+    ffmpeg \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Optional: sanity check
+RUN ffmpeg -version && ffprobe -version
 
 # Create non-root user
 RUN useradd -m -u 1000 -s /bin/bash worker
@@ -47,21 +52,10 @@ COPY worker/ ./worker/
 # Create temp directory for processing
 RUN mkdir -p /tmp/mpiper && chown -R worker:worker /tmp/mpiper /app
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TEMP_DIR=/tmp/mpiper
 
-# Switch to non-root user
 USER worker
 
-# Labels
-LABEL \
-    org.opencontainers.image.title="MPiper Worker" \
-    org.opencontainers.image.description="Python worker for MPiper media processing pipeline" \
-    org.opencontainers.image.source="https://github.com/rndmcodeguy20/mpiper" \
-    org.opencontainers.image.version="0.1.0"
-
-# Run the worker
 ENTRYPOINT ["python", "-m", "worker"]
-

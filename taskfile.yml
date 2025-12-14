@@ -159,6 +159,33 @@ tasks:
       - powershell -Command "if (Test-Path coverage.html) { Remove-Item coverage.html }"
       - echo "✅ Cleaned build artifacts"
 
+  docker-build-worker:
+    desc: Build Docker image for worker
+    cmds:
+      - docker build 
+        --build-arg ENV=development 
+        --build-arg VERSION={{.VERSION}} 
+        --build-arg BUILD_TIME={{.BUILD_TIME}} 
+        --build-arg COMMIT_HASH={{.GIT_COMMIT}}
+        -t {{.APP_NAME}}-worker:{{.VERSION}} 
+        -f deploy/docker/worker.dockerfile .
+
+  docker-run-worker:
+    desc: Run Docker container for worker
+    cmds:
+      - docker run 
+        --rm
+        --name {{.APP_NAME}}_worker_dev
+        --env-file .env.local
+        -v .secrets/:/app/.secrets:ro
+        -e DB_HOST=host.docker.internal
+        -e ENV=development
+        -e LOG_LEVEL=DEBUG
+        -e VERSION={{.VERSION}}
+        -e BUILD_TIME={{.BUILD_TIME}}
+        -e COMMIT_HASH={{.GIT_COMMIT}}
+        {{.APP_NAME}}-worker:{{.VERSION}}
+
   docker-build:
     desc: Build Docker image
     cmds:

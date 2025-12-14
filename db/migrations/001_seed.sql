@@ -54,6 +54,7 @@ CREATE TABLE assets
     height           INT,
     duration_seconds INT,
     error_reason     TEXT,
+    content_hash     TEXT,
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
