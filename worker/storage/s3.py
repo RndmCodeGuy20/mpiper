@@ -9,7 +9,9 @@ class S3Storage(StorageX):
         self.bucket = bucket
         self.s3 = boto3.client("s3", region_name=region)
 
-    def upload_bytes(self, key: str, data: bytes, content_type: Optional[str] = None) -> str:
+    def upload_bytes(
+        self, key: str, data: bytes, content_type: Optional[str] = None
+    ) -> str:
         params = {"Bucket": self.bucket, "Key": key, "Body": data}
         if content_type:
             params["ContentType"] = content_type

@@ -42,3 +42,7 @@ python-dotenv = "^1.2.1"
 
 [tool.poetry.scripts]
 mpiper_consumer = "worker.consumer:main"
+
+[tool.poetry.group.dev.dependencies]
+black = "^25.12.0"
+

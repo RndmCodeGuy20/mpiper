@@ -18,7 +18,9 @@ class GCSStorage(StorageX):
         self.client = _create_gcs_client(sa_path)
         self.bucket = self.client.bucket(bucket_name)
 
-    def upload_bytes(self, key: str, data: bytes, content_type: Optional[Any] = None) -> None:
+    def upload_bytes(
+        self, key: str, data: bytes, content_type: Optional[Any] = None
+    ) -> None:
         blob = self.bucket.blob(key)
         blob.upload_from_string(data, content_type=content_type)
 

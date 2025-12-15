@@ -1,9 +1,12 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+
 class StorageX(ABC):
     @abstractmethod
-    def upload_bytes(self, key: str, data: bytes, content_type: Optional[Any] = None) -> None:
+    def upload_bytes(
+        self, key: str, data: bytes, content_type: Optional[Any] = None
+    ) -> None:
         """Upload bytes data to storage with the given key and optional content type."""
         pass
 
@@ -36,4 +39,3 @@ class StorageX(ABC):
     def exists(self, key: str) -> bool:
         """Check if a key exists in storage."""
         pass
-

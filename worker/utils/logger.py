@@ -7,8 +7,8 @@ _DEFAULT_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 
 
 def setup_logging(
-        level: Optional[str] = None,
-        fmt: str = _DEFAULT_FORMAT,
+    level: Optional[str] = None,
+    fmt: str = _DEFAULT_FORMAT,
 ) -> None:
     """
     Set up logging configuration.

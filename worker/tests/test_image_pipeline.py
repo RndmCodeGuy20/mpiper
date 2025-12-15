@@ -66,7 +66,7 @@ class TestProcessImageFile(unittest.TestCase):
             local_raw_path="dummy.jpg",
             pg_pool=mock_pg_pool,
             storage=storage,
-            cfg=cfg
+            cfg=cfg,
         )
 
         # ---------------------
@@ -87,8 +87,12 @@ class TestProcessImageFile(unittest.TestCase):
             self.assertIn("image/", content_type)
 
         # 4. Correct roles
-        uploaded_roles = [call[0].split("/")[-1].split(".")[0] for call in storage.calls]
-        self.assertCountEqual(uploaded_roles, ["thumbnail", "display_small", "display_large"])
+        uploaded_roles = [
+            call[0].split("/")[-1].split(".")[0] for call in storage.calls
+        ]
+        self.assertCountEqual(
+            uploaded_roles, ["thumbnail", "display_small", "display_large"]
+        )
 
 
 if __name__ == "__main__":

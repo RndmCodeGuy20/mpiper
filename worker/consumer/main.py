@@ -11,6 +11,7 @@ from urllib.parse import quote_plus
 
 logger = logging.getLogger(__name__)
 
+
 def main():
     # Initialise configurations, database connections, and consumer
     logger.info("Starting worker consumer...")
@@ -20,25 +21,31 @@ def main():
     password = quote_plus(cfg.database.password)
 
     dsn = (
-    f"postgresql://{cfg.database.user}:{password}"
-    f"@{cfg.database.host}:{cfg.database.port}/{cfg.database.db_name}"
-)
+        f"postgresql://{cfg.database.user}:{password}"
+        f"@{cfg.database.host}:{cfg.database.port}/{cfg.database.db_name}"
+    )
     pg = PgPool(dsn=dsn)
-    consumer = Consumer(pg_pool=pg, storage=storage, redis_url=cfg.redis.connection_string, cfg=cfg)
-    consumer.consume('media:jobs')
+    consumer = Consumer(
+        pg_pool=pg, storage=storage, redis_url=cfg.redis.connection_string, cfg=cfg
+    )
+    consumer.consume("media:jobs")
 
     shutdown = False
+
     def _term(signum, frame):
         nonlocal shutdown
         logger.info("shutdown requested")
         shutdown = True
+
     signal.signal(signal.SIGINT, _term)
     signal.signal(signal.SIGTERM, _term)
 
     logger.info("starting job loop")
     while not shutdown:
         try:
-            processed = consumer.consume(cfg.stream_name) # single iteration --- returns True if did work
+            processed = consumer.consume(
+                cfg.stream_name
+            )  # single iteration --- returns True if did work
             if not processed:
                 time.sleep(cfg.job_poll_interval)
         except Exception:
@@ -47,15 +54,17 @@ def main():
 
     logger.info("exiting")
 
+
 if __name__ == "__main__":
     main()
 
 
 def get_storage(cfg: WorkerConfig) -> StorageX:
-    if cfg.bucket.provider == 's3':
+    if cfg.bucket.provider == "s3":
         return GCSStorage(cfg.bucket.bucket_name, cfg.bucket.sa_path)
     else:
         return GCSStorage(cfg.bucket.bucket_name, cfg.bucket.sa_path)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

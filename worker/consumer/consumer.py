@@ -63,7 +63,9 @@ class Consumer:
 
     """
 
-    def __init__(self, pg_pool: PgPool, redis_url: str, storage: StorageX, cfg: WorkerConfig) -> None:
+    def __init__(
+        self, pg_pool: PgPool, redis_url: str, storage: StorageX, cfg: WorkerConfig
+    ) -> None:
         """Create a consumer instance.
 
         Parameters
@@ -85,14 +87,16 @@ class Consumer:
         # Ensure the consumer group exists. If it already exists Redis raises an
         # error; ignore that specific error.
         try:
-            self.redis.xgroup_create(self.cfg.stream_name, self.cfg.consumer_group, id="$", mkstream=True)
+            self.redis.xgroup_create(
+                self.cfg.stream_name, self.cfg.consumer_group, id="$", mkstream=True
+            )
         except ResponseError as exc:
             logger.debug("consumer group exists or cannot be created: %s", exc)
 
     def consume(self, consumer_name: str) -> bool:
         """Poll the stream and process a single message.
 
-        This blocks briefly while waiting for messages. When a message is returned, 
+        This blocks briefly while waiting for messages. When a message is returned,
         it can contain either `job_id` or `asset_id` in its payload. `job_id` is
         preferred; if `asset_id` is present, the method ensures a job row exists
         before delegating to the job handler.
@@ -139,7 +143,7 @@ class Consumer:
 
                 body_dict = json.loads(body)
                 payload.update(body_dict)
-                payload.pop('body')
+                payload.pop("body")
 
             # logger.debug("normalized payload: %s", payload)
 
@@ -206,7 +210,9 @@ class Consumer:
             with self.pg.get_pg_conn() as conn:
                 cur = conn.cursor()
                 # Fetch attempts count and update job/asset state accordingly.
-                cur.execute("SELECT attempts FROM jobs WHERE job_id = %s", (str(job_id),))
+                cur.execute(
+                    "SELECT attempts FROM jobs WHERE job_id = %s", (str(job_id),)
+                )
                 row = cur.fetchone()
                 attempts_now = row[0] if row else 0
 
@@ -230,8 +236,14 @@ class Consumer:
         # On success, mark job done and mark related asset ready.
         with self.pg.get_pg_conn() as conn:
             cur = conn.cursor()
-            cur.execute("UPDATE jobs SET status = 'done', updated_at = now() WHERE job_id = %s", (str(job_id),))
-            cur.execute("UPDATE assets SET status = 'ready', updated_at = now() WHERE asset_id = %s", (asset_id,))
+            cur.execute(
+                "UPDATE jobs SET status = 'done', updated_at = now() WHERE job_id = %s",
+                (str(job_id),),
+            )
+            cur.execute(
+                "UPDATE assets SET status = 'ready', updated_at = now() WHERE asset_id = %s",
+                (asset_id,),
+            )
 
         # Acknowledge the Redis stream message.
         self.redis.xack(self.cfg.stream_name, self.cfg.consumer_group, msg_id)
@@ -245,7 +257,10 @@ class Consumer:
         """
         with self.pg.get_pg_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT asset_id, status, content_hash FROM assets WHERE asset_id = %s FOR UPDATE", (asset_id,))
+            cur.execute(
+                "SELECT asset_id, status, content_hash FROM assets WHERE asset_id = %s FOR UPDATE",
+                (asset_id,),
+            )
             row = cur.fetchone()
 
             if not row:
@@ -277,7 +292,10 @@ class Consumer:
             if jr:
                 job_id = jr[0]
             else:
-                cur.execute("SELECT job_id FROM jobs WHERE asset_id = %s AND type = 'process_asset'", (asset_id,))
+                cur.execute(
+                    "SELECT job_id FROM jobs WHERE asset_id = %s AND type = 'process_asset'",
+                    (asset_id,),
+                )
                 job_id = cur.fetchone()[0]
 
             conn.commit()
@@ -300,7 +318,9 @@ class Consumer:
             rows = cur.fetchall()
 
             for jid, asset_id, status in rows:
-                logger.info("requeueing job %s asset %s status %s", jid, asset_id, status)
+                logger.info(
+                    "requeueing job %s asset %s status %s", jid, asset_id, status
+                )
                 payload = {"job_id": str(jid), "asset_id": str(asset_id)}
                 # XADD will append a new message; deduping is handled by the jobs table.
                 self.redis.xadd(self.cfg.stream_name, payload)
