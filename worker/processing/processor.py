@@ -54,35 +54,13 @@ def process_asset_dispatch(
     )
     storage.download_to_file(raw_key, local_raw_file)
 
-    # if content_hash is None:
-    #     # compute and store content hash if missing
-    #     from worker.utils.hash import compute_file_hash
-    #
-    #     computed_hash = compute_file_hash(local_raw_file)
-    #     try:
-    #         with pg_pool.get_pg_conn() as conn:
-    #             cur = conn.cursor()
-    #             cur.execute(
-    #                 "UPDATE assets SET content_hash = %s WHERE asset_id = %s",
-    #                 (computed_hash, asset_id),
-    #             )
-    #         logger.info(
-    #             "computed and stored content hash for asset %s: %s",
-    #             asset_id,
-    #             computed_hash,
-    #         )
-    #     except psycopg.errors.UniqueViolation:
-    #         logger.info(
-    #             "duplicate content hash detected for asset %s, deduplicating", asset_id
-    #         )
-    #         handle_deduplication(computed_hash, pg_pool, asset_id)
-    #         return
-
     if typ == "image":
-        process_image_file(asset_id, local_raw_file, pg_pool, storage, cfg)
+        process_image_file(
+            asset_id, local_raw_file, content_hash, pg_pool, storage, cfg
+        )
     elif typ == "video":
         process_video_file(
-            asset_id, content_hash, local_raw_file, pg_pool, storage, cfg
+            asset_id, local_raw_file, content_hash, pg_pool, storage, cfg
         )
     else:
         raise ValueError("unknown asset type %s" % typ)
