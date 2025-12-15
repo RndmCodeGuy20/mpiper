@@ -66,40 +66,75 @@ GRANT USAGE ON SCHEMA variants TO mpiper;
 -- Create variants table
 CREATE TABLE variants.image
 (
-    variant_id uuid PRIMARY KEY     DEFAULT uuid_generate_v4(),
-    asset_id   uuid REFERENCES assets (asset_id) ON DELETE CASCADE,
-    url        TEXT        NOT NULL,
-    role       TEXT        NOT NULL, -- e.g., 'thumbnail', 'preview', 'full'
-    format     TEXT        NOT NULL, -- e.g., 'jpeg', 'png', 'webp'
-    width      INT         NOT NULL,
-    height     INT         NOT NULL,
-    size_bytes BIGINT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    variant_hash TEXT PRIMARY KEY,     -- deterministic hash of content + params
+    content_hash TEXT        NOT NULL, -- hash of raw media
+    role         TEXT        NOT NULL, -- 'thumbnail', 'preview', etc
+    format       TEXT        NOT NULL, -- 'jpeg', 'png', 'webp'
+    width        INT         NOT NULL,
+    height       INT         NOT NULL,
+    size_bytes   BIGINT      NOT NULL,
+    url          TEXT        NOT NULL, -- immutable storage URL
+    params       JSONB       NOT NULL, -- full transformation params
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX variants_image_asset_role_unique
-    ON variants.image (asset_id, role);
+-- Useful lookup indexes
+CREATE INDEX variants_image_content_hash_idx
+    ON variants.image (content_hash);
+
+CREATE INDEX variants_image_role_idx
+    ON variants.image (role);
+
+CREATE TABLE asset_image_variants
+(
+    asset_id     UUID        NOT NULL REFERENCES assets (asset_id) ON DELETE CASCADE,
+    role         TEXT        NOT NULL,
+    variant_hash TEXT        NOT NULL REFERENCES variants.image (variant_hash),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (asset_id, role)
+);
+
+CREATE INDEX asset_image_variants_variant_hash_idx
+    ON asset_image_variants (variant_hash);
+
 
 CREATE TABLE variants.video
 (
-    variant_id       uuid PRIMARY KEY     DEFAULT uuid_generate_v4(),
-    asset_id         uuid REFERENCES assets (asset_id) ON DELETE CASCADE,
-    url              TEXT        NOT NULL,
-    role             TEXT        NOT NULL, -- e.g., 'poster', 'transcoded'
-    codec            TEXT        NOT NULL, -- e.g., 'h264', 'av1'
-    container        TEXT        NOT NULL, -- e.g., 'mp4', 'webm'
-    resolution       TEXT        NOT NULL, -- e.g., '1080p', '720p'
+    variant_hash     TEXT PRIMARY KEY,     -- deterministic hash
+    content_hash     TEXT        NOT NULL,
+    role             TEXT        NOT NULL, -- 'poster', 'transcoded', 'preview'
+    codec            TEXT        NOT NULL, -- 'h264', 'av1'
+    container        TEXT        NOT NULL, -- 'mp4', 'webm'
+    resolution       TEXT        NOT NULL, -- '1280x720'
     bitrate_kbps     INT,
-    size_bytes       BIGINT,
-    manifest_url     TEXT,                 -- for adaptive streaming formats
+    size_bytes       BIGINT      NOT NULL,
+    url              TEXT        NOT NULL, -- immutable
+    manifest_url     TEXT,                 -- for HLS/DASH
     duration_seconds INT,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    params           JSONB       NOT NULL, -- ffmpeg + pipeline params
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX variants_video_asset_role_unique
-    ON variants.video (asset_id, role);
+CREATE INDEX variants_video_content_hash_idx
+    ON variants.video (content_hash);
+
+CREATE INDEX variants_video_role_idx
+    ON variants.video (role);
+
+CREATE TABLE asset_video_variants
+(
+    asset_id     UUID        NOT NULL REFERENCES assets (asset_id) ON DELETE CASCADE,
+    role         TEXT        NOT NULL,
+    variant_hash TEXT        NOT NULL REFERENCES variants.video (variant_hash),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (asset_id, role)
+);
+
+CREATE INDEX asset_video_variants_variant_hash_idx
+    ON asset_video_variants (variant_hash);
+
 
 
 CREATE TABLE jobs
