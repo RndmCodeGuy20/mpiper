@@ -1,28 +1,267 @@
+import hashlib
+import json
 import subprocess
 import os
 import logging
 
-from worker.consumer.db import PgPool
-from worker.storage.base import StorageX
-
 logger = logging.getLogger("videos")
 
 
-def _run(cmd):
-    logger.info("running ffmpeg: %s", " ".join(cmd))
+def run(cmd: list[str]) -> None:
+    logger.info("ffmpeg: %s", " ".join(cmd))
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if res.returncode != 0:
-        logger.error("ffmpeg failed: %s", res.stderr.decode())
-        raise RuntimeError("ffmpeg failed")
+        raise RuntimeError(res.stderr.decode())
 
 
-def process_video_file(
-    asset_id, local_raw_path, content_hash: str, pg_pool: PgPool, storage: StorageX, cfg
+def compute_variant_hash(content_hash: str, params: dict) -> str:
+    payload = json.dumps(params, sort_keys=True)
+    h = hashlib.sha256()
+    h.update(content_hash.encode())
+    h.update(payload.encode())
+    return h.hexdigest()
+
+
+def generate_poster(
+    asset_id: str,
+    content_hash: str,
+    local_raw_path: str,
+    pg_pool,
+    storage,
+    cfg,
 ):
-    logger.info("processing video asset %s", asset_id)
-    tmp_dir = os.path.dirname(local_raw_path)
-    # probe width/height/duration using ffprobe
-    probe_cmd = [
+    params = {
+        "role": "poster",
+        "seek_seconds": 2,
+        "width": 640,
+        "format": "jpg",
+        "encoder": "ffmpeg",
+    }
+
+    variant_hash = compute_variant_hash(content_hash, params)
+    key = f"media/processed/{content_hash}/{variant_hash}.jpg"
+    url = f"https://storage.googleapis.com/{cfg.bucket.bucket_name}/{key}"
+
+    # 1. Check if variant already exists
+    with pg_pool.get_pg_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM variants.image WHERE variant_hash=%s",
+            (variant_hash,),
+        )
+        if cur.fetchone():
+            logger.info("poster variant exists, reusing")
+        else:
+            tmp_path = os.path.join(cfg.temp_dir, f"{variant_hash}.jpg")
+            run(
+                [
+                    "ffmpeg",
+                    "-ss",
+                    "2",
+                    "-i",
+                    local_raw_path,
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale=640:-1",
+                    tmp_path,
+                    "-y",
+                ]
+            )
+
+            with open(tmp_path, "rb") as f:
+                data = f.read()
+                storage.upload_bytes(key, data, "image/jpeg")
+
+            cur.execute(
+                """
+                INSERT INTO variants.image (
+                    variant_hash, content_hash, role,
+                    format, width, height, size_bytes, url, params
+                )
+                VALUES (%s,%s,'poster','jpg',640,'',%s,%s,%s)
+                ON CONFLICT (variant_hash) DO NOTHING
+                """,
+                (variant_hash, content_hash, len(data), url, json.dumps(params)),
+            )
+
+        # 2. Map asset → variant
+        cur.execute(
+            """
+            INSERT INTO asset_image_variants (asset_id, role, variant_hash)
+            VALUES (%s,'poster',%s)
+            ON CONFLICT (asset_id, role)
+                DO UPDATE SET variant_hash=EXCLUDED.variant_hash
+            """,
+            (asset_id, variant_hash),
+        )
+
+
+def transcode_720p(
+    asset_id: str,
+    content_hash: str,
+    local_raw_path: str,
+    pg_pool,
+    storage,
+    cfg,
+):
+    params = {
+        "role": "transcoded",
+        "codec": "h264",
+        "container": "mp4",
+        "width": 1280,
+        "crf": 23,
+        "preset": "veryfast",
+        "audio": "aac-128k",
+        "ffmpeg": "default",
+    }
+
+    variant_hash = compute_variant_hash(content_hash, params)
+    key = f"media/processed/{content_hash}/{variant_hash}.mp4"
+    url = f"https://storage.googleapis.com/{cfg.bucket.bucket_name}/{key}"
+
+    with pg_pool.get_pg_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM variants.video WHERE variant_hash=%s",
+            (variant_hash,),
+        )
+        exists = cur.fetchone() is not None
+
+        if not exists:
+            out = os.path.join(cfg.temp_dir, f"{variant_hash}.mp4")
+            run(
+                [
+                    "ffmpeg",
+                    "-i",
+                    local_raw_path,
+                    "-vf",
+                    "scale='min(1280,iw)':-2",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-crf",
+                    "23",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "128k",
+                    out,
+                    "-y",
+                ]
+            )
+
+            with open(out, "rb") as f:
+                data = f.read()
+                storage.upload_bytes(key, data, "video/mp4")
+
+            cur.execute(
+                """
+                INSERT INTO variants.video (
+                    variant_hash, content_hash, role,
+                    codec, container, resolution,
+                    bitrate_kbps, size_bytes, url, params
+                )
+                VALUES (%s,%s,'transcoded','h264','mp4','1280x720',
+                        2500,%s,%s,%s)
+                ON CONFLICT (variant_hash) DO NOTHING
+                """,
+                (variant_hash, content_hash, len(data), url, json.dumps(params)),
+            )
+
+        cur.execute(
+            """
+            INSERT INTO asset_video_variants (asset_id, role, variant_hash)
+            VALUES (%s,'transcoded',%s)
+            ON CONFLICT (asset_id, role)
+                DO UPDATE SET variant_hash=EXCLUDED.variant_hash
+            """,
+            (asset_id, variant_hash),
+        )
+
+
+def generate_preview(
+    asset_id: str,
+    content_hash: str,
+    local_raw_path: str,
+    pg_pool,
+    storage,
+    cfg,
+):
+    params = {
+        "role": "preview",
+        "duration": 4,
+        "width": 854,
+        "muted": True,
+        "codec": "h264",
+    }
+
+    variant_hash = compute_variant_hash(content_hash, params)
+    key = f"media/processed/{content_hash}/{variant_hash}.mp4"
+    url = f"https://storage.googleapis.com/{cfg.bucket.bucket_name}/{key}"
+
+    with pg_pool.get_pg_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM variants.video WHERE variant_hash=%s",
+            (variant_hash,),
+        )
+        if not cur.fetchone():
+            out = os.path.join(cfg.temp_dir, f"{variant_hash}.mp4")
+            run(
+                [
+                    "ffmpeg",
+                    "-ss",
+                    "2",
+                    "-t",
+                    "4",
+                    "-i",
+                    local_raw_path,
+                    "-an",
+                    "-vf",
+                    "scale=854:-2",
+                    "-c:v",
+                    "libx264",
+                    "-crf",
+                    "25",
+                    out,
+                    "-y",
+                ]
+            )
+
+            with open(out, "rb") as f:
+                data = f.read()
+                storage.upload_bytes(key, data, "video/mp4")
+
+            cur.execute(
+                """
+                INSERT INTO variants.video (
+                    variant_hash, content_hash, role,
+                    codec, container, resolution,
+                    bitrate_kbps, size_bytes,
+                    duration_seconds, url, params
+                )
+                VALUES (%s,%s,'preview','h264','mp4','854x480',
+                        800,%s,4,%s,%s)
+                ON CONFLICT (variant_hash) DO NOTHING
+                """,
+                (variant_hash, content_hash, len(data), url, json.dumps(params)),
+            )
+
+        cur.execute(
+            """
+            INSERT INTO asset_video_variants (asset_id, role, variant_hash)
+            VALUES (%s,'preview',%s)
+            ON CONFLICT (asset_id, role)
+                DO UPDATE SET variant_hash=EXCLUDED.variant_hash
+            """,
+            (asset_id, variant_hash),
+        )
+
+
+def probe_video(local_path: str) -> dict:
+    cmd = [
         "ffprobe",
         "-v",
         "error",
@@ -34,169 +273,51 @@ def process_video_file(
         "format=duration",
         "-of",
         "json",
-        local_raw_path,
+        local_path,
     ]
-    p = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if p.returncode != 0:
-        logger.error("ffprobe failed: %s", p.stderr.decode())
-        raise RuntimeError("ffprobe failed")
-    import json
+        raise RuntimeError(p.stderr.decode())
 
     info = json.loads(p.stdout)
-    # extract dims/duration
-    streams = info.get("streams", [])
-    width = streams[0].get("width") if streams else None
-    height = streams[0].get("height") if streams else None
-    duration = float(info.get("format", {}).get("duration", 0.0))
+    stream = info["streams"][0]
+    return {
+        "width": stream["width"],
+        "height": stream["height"],
+        "duration": int(float(info["format"]["duration"])),
+    }
+
+
+def process_video_file(
+    asset_id: str,
+    local_raw_path: str,
+    content_hash: str,
+    pg_pool,
+    storage,
+    cfg,
+):
+    logger.info("processing video %s", asset_id)
+
+    metadata = probe_video(local_raw_path)
+    logger.info("video metadata: %s", metadata)
 
     with pg_pool.get_pg_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE assets SET width = %s, height = %s, duration_seconds = %s, mime_type = %s, updated_at=now() WHERE asset_id=%s",
-            (width, height, int(duration) if duration else None, "video", asset_id),
+        conn.cursor().execute(
+            """
+            UPDATE assets
+            SET width = %s, height = %s, duration_seconds = %s, updated_at=now()
+            WHERE asset_id=%s
+            """,
+            (metadata["width"], metadata["height"], metadata["duration"], asset_id),
         )
 
-    # 1) create poster
-    poster_path = os.path.join(tmp_dir, f"{asset_id}-poster.jpg")
-    try:
-        _run(
-            [
-                "ffmpeg",
-                "-ss",
-                "2",
-                "-i",
-                local_raw_path,
-                "-frames:v",
-                "1",
-                "-vf",
-                "scale=640:-1",
-                poster_path,
-                "-y",
-            ]
-        )
-        with open(poster_path, "rb") as f:
-            data = f.read()
-            key = f"media/processed/{asset_id}/video/poster_640.jpg"
-            storage.upload_bytes(key, data, content_type="image/jpeg")
-            url = "https://storage.googleapis.com/{bucket}/{key}".format(
-                bucket=cfg.bucket.bucket_name,
-                key=key,
-            )
-            with pg_pool.get_pg_conn() as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                            INSERT INTO variants.image (variant_id, asset_id, role, format, width, height, url, size_bytes, created_at)
-                            VALUES (gen_random_uuid(), %s, 'poster', 'jpg', %s, %s, %s, %s, now())
-                                ON CONFLICT (asset_id, role) DO NOTHING
-                            """,
-                    (asset_id, width or 640, height or 360, url, len(data)),
-                )
-    except Exception:
-        logger.exception("poster failed for %s", asset_id)
-        # poster failure shouldn't kill the whole pipeline; continue
+    generate_poster(asset_id, content_hash, local_raw_path, pg_pool, storage, cfg)
+    transcode_720p(asset_id, content_hash, local_raw_path, pg_pool, storage, cfg)
+    generate_preview(asset_id, content_hash, local_raw_path, pg_pool, storage, cfg)
 
-    # 2) transcode single mp4 720p
-    out_720 = os.path.join(tmp_dir, f"{asset_id}-720p.mp4")
-    scale_filter = "scale='min(1280,iw)':'-2'"
-    try:
-        _run(
-            [
-                "ffmpeg",
-                "-i",
-                local_raw_path,
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "23",
-                "-vf",
-                scale_filter,
-                "-c:a",
-                "aac",
-                "-b:a",
-                "128k",
-                out_720,
-                "-y",
-            ]
-        )
-        with open(out_720, "rb") as f:
-            data = f.read()
-            key = f"media/processed/{asset_id}/video/stream_720p.mp4"
-            storage.upload_bytes(key, data, content_type="video/mp4")
-            url = "https://storage.googleapis.com/{bucket}/{key}".format(
-                bucket=cfg.bucket.bucket_name,
-                key=key,
-            )
-            duration = int(duration) if duration else None
-            with pg_pool.get_pg_conn() as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                            INSERT INTO variants.video (variant_id, asset_id, role, codec, container, resolution, bitrate_kbps, url, size_bytes, duration_seconds, created_at)
-                            VALUES (gen_random_uuid(), %s, 'stream', 'h264', 'mp4', %s, %s, %s, %s, %s, now())
-                                ON CONFLICT (asset_id, role) DO NOTHING
-                            """,
-                    (asset_id, f"{1280}x{720}", 2500, url, duration, len(data)),
-                )
-    except Exception:
-        logger.exception("720p transcode failed for %s", asset_id)
-        raise
-
-    # 3) preview clip 4s muted 480p
-    preview_out = os.path.join(tmp_dir, f"{asset_id}-preview.mp4")
-    try:
-        _run(
-            [
-                "ffmpeg",
-                "-ss",
-                "2",
-                "-t",
-                "4",
-                "-i",
-                local_raw_path,
-                "-an",
-                "-vf",
-                "scale=854:-2",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "25",
-                preview_out,
-                "-y",
-            ]
-        )
-        with open(preview_out, "rb") as f:
-            data = f.read()
-            key = f"media/processed/{asset_id}/video/preview_4s_480p.mp4"
-            storage.upload_bytes(key, data, content_type="video/mp4")
-            url = "https://storage.googleapis.com/{bucket}/{key}".format(
-                bucket=cfg.bucket.bucket_name,
-                key=key,
-            )
-            with pg_pool.get_pg_conn() as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                            INSERT INTO variants.video (variant_id, asset_id, role, codec, container, resolution, bitrate_kbps, url, size_bytes, duration_seconds, created_at)
-                            VALUES (gen_random_uuid(), %s, 'preview', 'h264', 'mp4', %s, %s, %s, %s,%s, now())
-                                ON CONFLICT (asset_id, role) DO NOTHING
-                            """,
-                    (asset_id, "854x480", 800, url, len(data), 4),
-                )
-    except Exception:
-        logger.exception("preview generation failed for %s", asset_id)
-        # not fatal
-
-    logger.info("finished processing video asset %s", asset_id)
-
-    # finally, mark asset ready in DB
+    # Mark asset ready
     with pg_pool.get_pg_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE assets SET status='ready', updated_at = now() WHERE asset_id = %s",
+        conn.cursor().execute(
+            "UPDATE assets SET status='ready', updated_at=now() WHERE asset_id=%s",
             (asset_id,),
         )
