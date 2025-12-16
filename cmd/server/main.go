@@ -12,6 +12,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/rndmcodeguy20/mpiper/internal/config"
 	"github.com/rndmcodeguy20/mpiper/internal/database"
+	"github.com/rndmcodeguy20/mpiper/internal/metrics"
 	"github.com/rndmcodeguy20/mpiper/internal/server"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils"
 	"go.uber.org/zap"
@@ -37,14 +38,23 @@ func main() {
 		zap.String("build_time", BuildTime),
 		zap.String("author", Author),
 	)
-	defer func(l *zap.Logger) {
-		err := utils.CloseLogger(l)
+	defer func(l *utils.Logger) {
+		err := l.Close()
 		if err != nil {
 			panic(err)
 		}
 	}(baseLogger)
 
 	baseLogger.Sugar().Infof("Starting %s server on https://%s:%d in %s mode", "MPiper", cfg.Server.Host, cfg.Server.Port, cfg.Environment)
+
+	tracerCtx := context.Background()
+	shutdownTracer := metrics.InitTracer(tracerCtx, *baseLogger)
+	defer func() {
+		err := shutdownTracer(tracerCtx)
+		if err != nil {
+			baseLogger.Sugar().Errorf("Failed to shut down tracer: %v", err)
+		}
+	}()
 
 	db, err := database.NewPostgresDB(cfg.DB)
 	if err != nil {

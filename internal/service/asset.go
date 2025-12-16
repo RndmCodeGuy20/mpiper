@@ -14,6 +14,9 @@ import (
 	"github.com/rndmcodeguy20/mpiper/internal/repository"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils/storagex"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 )
 
@@ -67,34 +70,66 @@ func NewAssetService(redisCfg *config.RedisConfig, provider storagex.Provider, a
 }
 
 func (s *assetService) CreateAsset(ctx context.Context, request models.UploadAssetRequest) (*models.UploadAssetResponse, error) {
+	tracer := otel.Tracer("mpiper-api")
+	ctx, span := tracer.Start(ctx, "AssetService.CreateAsset")
+	defer span.End()
+
 	// create signedUrl
 	assetID := uuid.New()
+	span.SetAttributes(
+		attribute.String("asset_id", assetID.String()),
+		attribute.String("content_type", request.ContentType),
+		attribute.Int64("content_length", request.Size),
+	)
+
 	objectKey := fmt.Sprintf("media/raw/%s", assetID)
-	signedUrl, err := s.storageClient.GeneratePresignedURL(ctx, "mpiper", objectKey, &storagex.PresignedURLOptions{
+
+	spanStorageCtx, spanStorage := tracer.Start(ctx, "StorageClient.GeneratePresignedURL")
+	spanStorage.SetAttributes(attribute.String("object_key", objectKey))
+	// GeneratePresignedURL creates a temporary signed URL for uploading an object to the storage bucket.
+	// It generates a PUT presigned URL valid for 5 minutes that allows clients to upload files
+	// with the specified content type to the "mpiper" bucket at the given object key.
+	signedUrl, err := s.storageClient.GeneratePresignedURL(spanStorageCtx, "mpiper", objectKey, &storagex.PresignedURLOptions{
 		Method:           "PUT",
 		ContentType:      request.ContentType,
 		ExpiresInSeconds: 60 * 5, // 5 minutes
 	})
+	spanStorage.End()
 
 	s.logger.Debug("Generated signed URL: ", zap.String("url", signedUrl))
 
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to generate presigned URL")
 		s.logger.Sugar().Errorf("Failed to generate presigned URL: %v", err)
 		return nil, err
 	}
 
-	publicUrl, err := s.storageClient.PublicURL(ctx, "mpiper", objectKey)
+	spanStorageCtx, spanStorage = tracer.Start(ctx, "StorageClient.PublicURL")
+	spanStorage.SetAttributes(attribute.String("object_key", objectKey))
+	publicUrl, err := s.storageClient.PublicURL(spanStorageCtx, "mpiper", objectKey)
+	spanStorage.End()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to get public URL")
 		s.logger.Sugar().Errorf("Failed to get public URL: %v", err)
 		return nil, err
 	}
 	s.logger.Debug("Public URL: ", zap.String("url", publicUrl))
 
-	err = s.assetRepo.CreateAsset(assetID, publicUrl, request.Size, repository.ToAssetTypeFromMimeType(request.ContentType), request.ContentType)
+	spanStorageCtx, spanStorage = tracer.Start(ctx, "AssetRepo.CreateAsset")
+	spanStorage.SetAttributes(attribute.String("asset_id", assetID.String()))
+	err = s.assetRepo.CreateAsset(spanStorageCtx, assetID, publicUrl, request.Size, repository.ToAssetTypeFromMimeType(request.ContentType), request.ContentType)
+	spanStorage.End()
+
 	if err != nil {
+		spanStorage.RecordError(err)
+		spanStorage.SetStatus(codes.Error, "Failed to create asset")
 		s.logger.Sugar().Errorf("Failed to create asset: %v", err)
 		return nil, err
 	}
+
+	span.SetStatus(codes.Ok, "Asset created successfully")
 
 	return &models.UploadAssetResponse{
 		UploadUrl:  signedUrl,

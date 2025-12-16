@@ -71,7 +71,7 @@ func ToAssetTypeFromMimeType(mimeType string) AssetType {
 }
 
 type AssetRepository interface {
-	CreateAsset(id uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error
+	CreateAsset(ictx context.Context, d uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error
 	CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error
 	MarkAssetUploaded(id uuid.UUID) error
 	MarkAssetUploadedTx(ctx context.Context, tx *sql.Tx, id uuid.UUID) (bool, error)
@@ -95,9 +95,10 @@ func (r *assetRepo) GetDB() *sqlx.DB {
 	return r.db
 }
 
-func (r *assetRepo) CreateAsset(id uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error {
+func (r *assetRepo) CreateAsset(ctx context.Context, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error {
 	query := `INSERT INTO assets (asset_id, original_url, type, mime_type, status, size_bytes) VALUES ($1, $2, $3, $4, $5, $6);`
-	_, err := r.db.Exec(
+	_, err := r.db.ExecContext(
+		ctx,
 		query,
 		id,
 		url,

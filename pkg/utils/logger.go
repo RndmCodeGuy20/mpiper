@@ -226,6 +226,11 @@ func getLogLevelFromEnv() zapcore.Level {
 
 // Convenience methods
 
+// With accepts typed zap fields (compile-time safety).
+func (l *Logger) With(fields ...zap.Field) *Logger {
+	return &Logger{Logger: l.Logger.With(fields...)}
+}
+
 // WithField adds a single field to the logger context
 func (l *Logger) WithField(key string, value interface{}) *Logger {
 	return &Logger{Logger: l.Logger.With(zap.Any(key, value))}

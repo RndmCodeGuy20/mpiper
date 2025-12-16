@@ -8,6 +8,10 @@ import (
 	"github.com/rndmcodeguy20/mpiper/internal/models"
 	"github.com/rndmcodeguy20/mpiper/internal/service"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.uber.org/zap"
 )
 
 type AssetHandler struct {
@@ -23,48 +27,65 @@ func NewAssetHandler(svc service.AssetService, logger *utils.Logger) *AssetHandl
 }
 
 func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
-	{
-		var req models.UploadAssetRequest
-		err := utils.ParseJSON(r.Body, &req)
-		if err != nil {
-			utils.RespondJSON(
-				w,
-				map[string]string{"status": "error", "message": "Invalid request payload"},
-				http.StatusBadRequest,
-			)
-			return
-		}
+	tracer := otel.Tracer("mpiper-api")
 
-		if req.ContentType == "" {
-			utils.RespondJSON(
-				w,
-				map[string]string{"status": "error", "message": "ContentType is required"},
-				http.StatusBadRequest,
-			)
-			return
-		}
+	ctx, span := tracer.Start(r.Context(), "AssetHandler.CreateAsset")
+	defer span.End()
 
-		timeoutCtx, cancelFn := utils.GetTimeoutContext(r.Context(), 30)
-		defer cancelFn()
-
-		res, err := h.svc.CreateAsset(timeoutCtx, req)
-
-		if err != nil {
-			h.logger.Sugar().Errorf("Failed to create asset: %v", err)
-			utils.RespondJSON(
-				w,
-				map[string]string{"status": "error", "message": "Failed to create asset", "error": err.Error()},
-				http.StatusInternalServerError,
-			)
-			return
-		}
-
+	var req models.UploadAssetRequest
+	err := utils.ParseJSON(r.Body, &req)
+	if err != nil {
+		h.logger.Error("Failed to parse create asset request", zap.Error(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Invalid request payload")
 		utils.RespondJSON(
 			w,
-			map[string]interface{}{"status": "success", "data": res},
-			http.StatusOK,
+			map[string]string{"status": "error", "message": "Invalid request payload"},
+			http.StatusBadRequest,
 		)
+		return
 	}
+
+	span.SetAttributes(
+		attribute.String("content_type", req.ContentType),
+		attribute.Int64("content_length", req.Size),
+	)
+
+	if req.ContentType == "" {
+		h.logger.Error("ContentType is required")
+		span.SetStatus(codes.Error, "ContentType is required")
+		utils.RespondJSON(
+			w,
+			map[string]string{"status": "error", "message": "ContentType is required"},
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	timeoutCtx, cancelFn := utils.GetTimeoutContext(ctx, 30)
+	defer cancelFn()
+
+	res, err := h.svc.CreateAsset(timeoutCtx, req)
+	if err != nil {
+		h.logger.Error("Failed to create asset", zap.Error(err))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to create asset")
+		utils.RespondJSON(
+			w,
+			map[string]string{"status": "error", "message": "Failed to create asset", "error": err.Error()},
+			http.StatusInternalServerError,
+		)
+		return
+	}
+
+	span.SetAttributes(attribute.String("asset_id", res.AssetID))
+	span.SetStatus(codes.Ok, "Asset created successfully")
+
+	utils.RespondJSON(
+		w,
+		map[string]interface{}{"status": "success", "data": res},
+		http.StatusOK,
+	)
 }
 
 func (h *AssetHandler) MarkAssetUploaded(w http.ResponseWriter, r *http.Request) {
