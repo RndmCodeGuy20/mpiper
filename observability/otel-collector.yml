@@ -1,0 +1,357 @@
+# ============================================================================
+# OpenTelemetry Collector Configuration - Production Ready
+# ============================================================================
+# This configuration collects metrics, traces, and logs from the application
+# and exports them to Prometheus, Tempo, and Loki respectively.
+# ============================================================================
+
+# ============================================================================
+# RECEIVERS
+# ============================================================================
+# Receivers define how the collector ingests telemetry data from applications
+receivers:
+  # OTLP receiver for OpenTelemetry Protocol
+  # Accepts metrics, traces, and logs from instrumented applications
+  otlp:
+    protocols:
+      # gRPC endpoint (default port: 4317)
+      # Recommended for production due to better performance
+      grpc:
+        endpoint: 0.0.0.0:4317
+        # Maximum message size (100MB) to handle large payloads
+        max_recv_msg_size_mib: 100
+        # Maximum concurrent streams to prevent resource exhaustion
+        max_concurrent_streams: 100
+        # Read/write buffer sizes for better throughput
+        read_buffer_size: 524288  # 512KB
+        write_buffer_size: 524288 # 512KB
+        # Keepalive settings to maintain connection health
+        keepalive:
+          server_parameters:
+            max_connection_idle: 11s
+            max_connection_age: 12s
+            max_connection_age_grace: 5s
+            time: 30s
+            timeout: 5s
+          enforcement_policy:
+            min_time: 10s
+            permit_without_stream: true
+      
+      # HTTP endpoint (default port: 4318)
+      # Fallback for clients that cannot use gRPC
+      http:
+        endpoint: 0.0.0.0:4318
+        # CORS settings for browser-based clients
+        cors:
+          allowed_origins:
+            - http://*
+            - https://*
+        # Maximum request body size
+        max_request_body_size: 104857600 # 100MB
+
+  # Health check endpoint for Kubernetes liveness/readiness probes
+  # Exposed on port 13133
+  prometheus/internal:
+    config:
+      scrape_configs:
+        - job_name: 'otel-collector'
+          scrape_interval: 10s
+          static_configs:
+            - targets: ['localhost:8888']
+
+# ============================================================================
+# PROCESSORS
+# ============================================================================
+# Processors modify, filter, or enrich telemetry data before export
+processors:
+  # Memory limiter prevents out-of-memory crashes
+  # CRITICAL: Must be the first processor in every pipeline
+  memory_limiter:
+    # Hard limit: collector will refuse new data at this threshold
+    limit_mib: 1024
+    # Soft limit: triggers garbage collection and backpressure
+    spike_limit_mib: 256
+    # How often to check memory usage
+    check_interval: 1s
+
+  # Batch processor groups telemetry data for efficient export
+  # Reduces network overhead and improves backend performance
+  batch:
+    # Maximum time to wait before sending a batch
+    timeout: 10s
+    # Send batch when this many items are collected
+    send_batch_size: 1024
+    # Maximum batch size (prevents oversized requests)
+    send_batch_max_size: 2048
+
+  # Resource processor adds/modifies resource attributes
+  # Useful for adding environment, region, or cluster information
+  resource:
+    attributes:
+      # Deployment environment (dev/staging/prod)
+      # CHANGE THIS based on your deployment target
+      - key: deployment.environment
+        value: ${env:DEPLOYMENT_ENV}
+        action: upsert
+      
+      # Service version for tracking deployments
+      - key: service.version
+        value: ${env:SERVICE_VERSION}
+        action: upsert
+      
+      # Kubernetes cluster name for multi-cluster setups
+      - key: k8s.cluster.name
+        value: ${env:K8S_CLUSTER_NAME}
+        action: upsert
+
+  # Attributes processor for filtering and transforming data
+  # Removes sensitive data and reduces cardinality
+  attributes/common:
+    actions:
+      # Remove PII or sensitive attributes
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      # Add common attributes
+      - key: collector.name
+        value: "otel-collector"
+        action: insert
+
+  # Resource detection adds cloud provider metadata automatically
+  # Detects AWS, GCP, Azure, and Kubernetes attributes
+  resourcedetection:
+    detectors: [env, system, docker, gcp, ec2, ecs, eks, azure, aks]
+    timeout: 5s
+    override: false
+
+  # Filter processor for dropping unwanted telemetry
+  # Reduces costs by filtering noisy or low-value data
+  filter/healthcheck:
+    traces:
+      span:
+        # Drop health check endpoints to reduce noise
+        - 'attributes["http.route"] == "/health"'
+        - 'attributes["http.route"] == "/healthz"'
+        - 'attributes["http.route"] == "/ready"'
+        - 'attributes["http.route"] == "/readyz"'
+
+  # Probabilistic sampler for high-volume environments
+  # Reduces trace volume while maintaining statistical validity
+  probabilistic_sampler:
+    # Sample 10% of traces (adjust based on volume)
+    sampling_percentage: 10.0
+
+  # Tail sampling for intelligent trace selection
+  # Keeps all error traces and samples successful ones
+  tail_sampling:
+    # Decision wait time (collect all spans before deciding)
+    decision_wait: 10s
+    # Number of traces kept in memory
+    num_traces: 50000
+    # Expected new traces per second
+    expected_new_traces_per_sec: 100
+    policies:
+      # Always sample traces with errors
+      - name: error-traces
+        type: status_code
+        status_code: {status_codes: [ERROR]}
+      # Sample 10% of successful traces
+      - name: probabilistic-policy
+        type: probabilistic
+        probabilistic: {sampling_percentage: 10}
+      # Always sample slow requests (>2 seconds)
+      - name: slow-traces
+        type: latency
+        latency: {threshold_ms: 2000}
+
+# ============================================================================
+# EXPORTERS
+# ============================================================================
+# Exporters send telemetry data to backend systems
+exporters:
+  # Prometheus exporter for metrics
+  # Exposes metrics endpoint for Prometheus scraping
+  prometheus:
+    endpoint: 0.0.0.0:9464
+    # Namespace prefix for all metrics
+    namespace: mpiper
+    # Add metric suffixes (_total, _bucket, etc.)
+    send_timestamps: true
+    metric_expiration: 5m
+    # Enable resource to metric labels conversion
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # OTLP exporter to Tempo for distributed tracing
+  otlp/tempo:
+    endpoint: tempo:4317
+    # TLS configuration for secure communication
+    # PRODUCTION: Set insecure to false and configure TLS
+    tls:
+      insecure: true
+      # Uncomment for production with TLS
+      # insecure: false
+      # cert_file: /etc/otel/certs/cert.pem
+      # key_file: /etc/otel/certs/key.pem
+      # ca_file: /etc/otel/certs/ca.pem
+    
+    # Retry configuration for transient failures
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    
+    # Queue settings for handling backpressure
+    sending_queue:
+      enabled: true
+      num_consumers: 10
+      queue_size: 5000
+    
+    # Compression for reduced network usage
+    compression: gzip
+    
+    # Timeout for export requests
+    timeout: 30s
+
+  # Loki exporter for logs
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+    # Timeout for log export
+    timeout: 10s
+    
+    # Retry configuration
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    
+    # Queue settings
+    sending_queue:
+      enabled: true
+      num_consumers: 5
+      queue_size: 1000
+    
+    # Labels to add to all log entries
+    labels:
+      resource:
+        # Convert resource attributes to Loki labels
+        service.name: "service_name"
+        deployment.environment: "environment"
+      attributes:
+        # Convert log attributes to Loki labels
+        level: "level"
+    
+    # Tenant ID for multi-tenant Loki deployments
+    # tenant_id: "mpiper"
+
+  # Debug exporter for troubleshooting (DISABLE IN PRODUCTION)
+  # Uncomment to enable verbose logging of telemetry data
+  # logging:
+  #   loglevel: debug
+  #   sampling_initial: 5
+  #   sampling_thereafter: 200
+
+# ============================================================================
+# EXTENSIONS
+# ============================================================================
+# Extensions provide additional functionality like health checks and profiling
+extensions:
+  # Health check extension for Kubernetes probes
+  health_check:
+    endpoint: 0.0.0.0:13133
+    path: "/health/status"
+    check_collector_pipeline:
+      enabled: true
+      interval: 5s
+      exporter_failure_threshold: 5
+
+  # Performance profiler for debugging (DISABLE IN PRODUCTION)
+  # pprof:
+  #   endpoint: 0.0.0.0:1777
+
+  # zPages for in-process diagnostics
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+# ============================================================================
+# SERVICE CONFIGURATION
+# ============================================================================
+# Defines pipelines and enables extensions
+service:
+  # Enable extensions
+  extensions: [health_check, zpages]
+  
+  # Telemetry configuration for the collector itself
+  telemetry:
+    logs:
+      level: info
+      # Development: debug, Production: info or warn
+      encoding: json
+      # Enable sampling to reduce collector's own log volume
+      sampling:
+        enabled: true
+        initial: 10
+        thereafter: 100
+    
+    metrics:
+      # Expose collector's own metrics
+      level: detailed
+      address: 0.0.0.0:8888
+
+  # Define telemetry pipelines
+  pipelines:
+    # ========================================================================
+    # METRICS PIPELINE
+    # ========================================================================
+    # Flow: Application -> OTLP Receiver -> Processors -> Prometheus Exporter
+    metrics:
+      receivers: [otlp]
+      processors: 
+        - memory_limiter      # MUST be first
+        - resourcedetection   # Detect environment metadata
+        - resource            # Add custom resource attributes
+        - attributes/common   # Clean and enrich attributes
+        - batch               # Batch for efficiency
+      exporters: [prometheus]
+
+    # ========================================================================
+    # TRACES PIPELINE
+    # ========================================================================
+    # Flow: Application -> OTLP Receiver -> Processors -> Tempo
+    traces:
+      receivers: [otlp]
+      processors:
+        - memory_limiter         # MUST be first
+        - resourcedetection      # Detect environment metadata
+        - resource               # Add custom resource attributes
+        - attributes/common      # Clean and enrich attributes
+        - filter/healthcheck     # Drop health check traces
+        - tail_sampling          # Intelligent sampling
+        - batch                  # Batch for efficiency
+      exporters: [otlp/tempo]
+
+    # ========================================================================
+    # LOGS PIPELINE
+    # ========================================================================
+    # Flow: Application -> OTLP Receiver -> Processors -> Loki
+    logs:
+      receivers: [otlp]
+      processors:
+        - memory_limiter      # MUST be first
+        - resourcedetection   # Detect environment metadata
+        - resource            # Add custom resource attributes
+        - attributes/common   # Clean and enrich attributes
+        - batch               # Batch for efficiency
+      exporters: [loki]
+
+    # ========================================================================
+    # INTERNAL METRICS PIPELINE
+    # ========================================================================
+    # Collects and exports the collector's own metrics
+    metrics/internal:
+      receivers: [prometheus/internal]
+      processors: [batch]
+      exporters: [prometheus]

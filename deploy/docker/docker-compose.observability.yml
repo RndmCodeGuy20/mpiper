@@ -1,0 +1,208 @@
+version: '3.8'
+
+# ============================================================================
+# Complete Observability Stack for MPiper
+# - Grafana: Visualization and dashboards
+# - Tempo: Distributed tracing backend
+# - Prometheus: Metrics collection and storage
+# - Loki: Log aggregation
+# - OTEL Collector: Centralized telemetry collection
+# ============================================================================
+
+services:
+  # ==========================================================================
+  # Grafana Tempo - Distributed Tracing Backend
+  # ==========================================================================
+  tempo:
+    image: grafana/tempo:latest
+    container_name: mpiper-tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo.yaml
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo HTTP
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+      - "9411:9411"   # Zipkin receiver
+      - "14268:14268" # Jaeger ingest
+    networks:
+      - mpiper-observability
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3200/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Grafana - Visualization Platform
+  # ==========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: mpiper-grafana
+    environment:
+      # Anonymous access for easy local development
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=false
+      
+      # Default admin credentials (CHANGE IN PRODUCTION!)
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      
+      # Enable explore by default
+      - GF_EXPLORE_ENABLED=true
+      
+      # Server settings
+      - GF_SERVER_HTTP_PORT=3000
+      - GF_SERVER_DOMAIN=localhost
+      
+      # Feature toggles
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor,traceqlSearch
+      
+      # Log level
+      - GF_LOG_LEVEL=info
+      
+    volumes:
+      # Pre-configured data sources
+      - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources
+      # Pre-configured dashboards
+      - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      # Persistent storage for user preferences
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - mpiper-observability
+    depends_on:
+      tempo:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Prometheus - Metrics Collection
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: mpiper-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - mpiper-observability
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Loki - Log Aggregation
+  # ==========================================================================
+  loki:
+    image: grafana/loki:latest
+    container_name: mpiper-loki
+    command: -config.file=/etc/loki/loki.yaml
+    volumes:
+      - ./observability/loki.yaml:/etc/loki/loki.yaml
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - mpiper-observability
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================================================
+  # Promtail - Log Shipper for Loki
+  # ==========================================================================
+  promtail:
+    image: grafana/promtail:latest
+    container_name: mpiper-promtail
+    command: -config.file=/etc/promtail/promtail.yaml
+    volumes:
+      - ./observability/promtail.yaml:/etc/promtail/promtail.yaml
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - mpiper-observability
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  # ==========================================================================
+  # OpenTelemetry Collector - Centralized Telemetry Pipeline
+  # ==========================================================================
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: mpiper-otel-collector
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./observability/otel-collector-grafana.yaml:/etc/otel-collector.yaml
+    ports:
+      - "4319:4317"   # OTLP gRPC (host:4319 -> container:4317)
+      - "4320:4318"   # OTLP HTTP (host:4320 -> container:4318)
+      - "8888:8888"   # Prometheus metrics exposed by the collector
+      - "8889:8889"   # Prometheus exporter
+      - "13133:13133" # Health check
+      - "55679:55679" # zPages extension
+    networks:
+      - mpiper-observability
+    depends_on:
+      tempo:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:13133/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# ============================================================================
+# NETWORKS
+# ============================================================================
+networks:
+  mpiper-observability:
+    driver: bridge
+    name: mpiper-observability
+
+# ============================================================================
+# VOLUMES
+# ============================================================================
+volumes:
+  tempo-data:
+    driver: local
+  grafana-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  loki-data:
+    driver: local

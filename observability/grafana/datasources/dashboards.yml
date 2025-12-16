@@ -1,0 +1,16 @@
+# ============================================================================
+# Grafana Dashboards - Auto-provisioning
+# ============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: 'Default'
+    orgId: 1
+    folder: 'MPiper'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
