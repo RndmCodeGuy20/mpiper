@@ -41,6 +41,7 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB) *chi.Mux {
 	r.Use(appMiddleware.RecoveryMiddleware(logger))
 	r.Use(middleware.Timeout(MiddlewareTimeout))
 	r.Use(appMiddleware.TracingMiddleware)
+	r.Use(appMiddleware.MetricsMiddleware)
 
 	r.Use(middleware.Compress(5))
 	r.Use(appMiddleware.SlowRequestMiddleware(logger, 2*time.Second))

@@ -56,6 +56,16 @@ func main() {
 		}
 	}()
 
+	// Initialize metrics
+	metricsCtx := context.Background()
+	shutdownMetrics := metrics.InitMetrics(metricsCtx, *baseLogger)
+	defer func() {
+		err := shutdownMetrics(metricsCtx)
+		if err != nil {
+			baseLogger.Sugar().Errorf("Failed to shut down metrics: %v", err)
+		}
+	}()
+
 	db, err := database.NewPostgresDB(cfg.DB)
 	if err != nil {
 		baseLogger.Sugar().Fatalf("Failed to connect to database: %v", err)
