@@ -32,6 +32,9 @@ func InitTracer(ctx context.Context, logger utils.Logger) func(context.Context) 
 	// Get OTLP collector endpoint from environment with fallback
 	endpoint := getEnvOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317")
 
+	// Strip any URL scheme (grpc://, http://, https://) as the OTLP exporter only accepts host:port
+	endpoint = stripURLScheme(endpoint)
+
 	logger.Sugar().Infof("Initializing OpenTelemetry tracer with endpoint: %s", endpoint)
 
 	// Configure gRPC connection options for production reliability
@@ -186,4 +189,17 @@ func getInstanceID() string {
 	}
 	// Fallback to a generated ID
 	return fmt.Sprintf("instance-%d", time.Now().Unix())
+}
+
+// stripURLScheme removes URL schemes (grpc://, http://, https://) from the endpoint
+// The OTLP gRPC exporter expects only host:port format
+func stripURLScheme(endpoint string) string {
+	// Remove common URL schemes
+	schemes := []string{"grpc://", "http://", "https://"}
+	for _, scheme := range schemes {
+		if len(endpoint) > len(scheme) && endpoint[:len(scheme)] == scheme {
+			return endpoint[len(scheme):]
+		}
+	}
+	return endpoint
 }
