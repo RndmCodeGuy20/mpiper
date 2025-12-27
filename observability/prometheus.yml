@@ -35,6 +35,10 @@ scrape_configs:
   - job_name: 'otel-metrics'
     static_configs:
       - targets: ['otel-collector:8889']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'mpiper-otel'
 
   # Scrape Tempo metrics
   - job_name: 'tempo'
