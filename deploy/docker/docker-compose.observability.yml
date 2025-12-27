@@ -9,6 +9,8 @@ version: '3.8'
 # - OTEL Collector: Centralized telemetry collection
 # ============================================================================
 
+name: mpiper-observability-stack
+
 services:
   # ==========================================================================
   # Grafana Tempo - Distributed Tracing Backend
@@ -18,7 +20,7 @@ services:
     container_name: mpiper-tempo
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
-      - ./observability/tempo.yaml:/etc/tempo.yaml
+      - ../../observability/tempo.yml:/etc/tempo.yaml
       - tempo-data:/var/tempo
     ports:
       - "3200:3200"   # Tempo HTTP
@@ -66,9 +68,9 @@ services:
       
     volumes:
       # Pre-configured data sources
-      - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources
+      - ../../observability/grafana/datasources:/etc/grafana/provisioning/datasources
       # Pre-configured dashboards
-      - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ../../observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
       # Persistent storage for user preferences
       - grafana-data:/var/lib/grafana
     ports:
@@ -103,7 +105,7 @@ services:
       - '--web.console.templates=/usr/share/prometheus/consoles'
       - '--web.enable-lifecycle'
     volumes:
-      - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yml
+      - ../../observability/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
@@ -124,7 +126,7 @@ services:
     container_name: mpiper-loki
     command: -config.file=/etc/loki/loki.yaml
     volumes:
-      - ./observability/loki.yaml:/etc/loki/loki.yaml
+      - ../../observability/loki.yml:/etc/loki/loki.yaml
       - loki-data:/loki
     ports:
       - "3100:3100"
@@ -145,9 +147,10 @@ services:
     container_name: mpiper-promtail
     command: -config.file=/etc/promtail/promtail.yaml
     volumes:
-      - ./observability/promtail.yaml:/etc/promtail/promtail.yaml
+      - ../../observability/promtail.yml:/etc/promtail/promtail.yaml
       - /var/log:/var/log:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - mpiper-observability
     depends_on:
@@ -161,8 +164,15 @@ services:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: mpiper-otel-collector
     command: ["--config=/etc/otel-collector.yaml"]
+    env_file:
+      - ../../.env.local
+    environment:
+      DEPLOYMENT_ENV: local
+      SERVICE_VERSION: dev
+      K8S_CLUSTER_NAME: docker-compose
     volumes:
-      - ./observability/otel-collector-grafana.yaml:/etc/otel-collector.yaml
+      - ../../observability/otel-collector.yml:/etc/otel-collector.yaml
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
       - "4319:4317"   # OTLP gRPC (host:4319 -> container:4317)
       - "4320:4318"   # OTLP HTTP (host:4320 -> container:4318)
