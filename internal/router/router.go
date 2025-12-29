@@ -1,6 +1,7 @@
 package router
 
 import (
+	"math/rand"
 	"net/http"
 	"time"
 
@@ -38,22 +39,13 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB) *chi.Mux {
 		MaxAge:           300,
 	}))
 	r.Use(appMiddleware.LoggerMiddleware(logger))
-	r.Use(appMiddleware.RecoveryMiddleware(logger))
 	r.Use(middleware.Timeout(MiddlewareTimeout))
 	r.Use(appMiddleware.TracingMiddleware)
 	r.Use(appMiddleware.MetricsMiddleware)
+	r.Use(appMiddleware.RecoveryMiddleware(logger))
 
 	r.Use(middleware.Compress(5))
 	r.Use(appMiddleware.SlowRequestMiddleware(logger, 2*time.Second))
-
-	//domainRepository := repository.NewDomainRepository(db, logger)
-	//domainService := service.NewDomainService(domainRepository, cfg, logger)
-	//domainHandler := handler.NewDomainHandler(domainService, logger)
-	//
-	//userRepository := repository.NewUserRepository(db, logger)
-	//authService := service.NewAuthService(logger, userRepository)
-	//userService := service.NewUserService(logger, userRepository)
-	//userHandler := handler.NewUserHandler(userService, authService, logger)
 
 	assetRepo := repository.NewAssetRepository(db, logger)
 	assetSvc := service.NewAssetService(&cfg.Redis, storagex.GCPProvider, assetRepo, logger)
@@ -68,9 +60,28 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB) *chi.Mux {
 		}
 	})
 
+	r.Get("/metric_test", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond) // Simulate variable processing time
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{"status": "ok", "message": "Metric test endpoint"}`))
+		if err != nil {
+			return
+		}
+	})
+
 	r.Get("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+
+	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{"status": "ok", "message": "mpiper is healthy"}`))
+		if err != nil {
+			return
+		}
+	})
+
+	// v1 API Routes
 
 	r.Route("/api/"+APIVersion, func(r chi.Router) {
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) {

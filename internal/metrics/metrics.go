@@ -17,18 +17,12 @@ import (
 )
 
 var (
-	// ========================================
-	// HTTP Metrics
-	// ========================================
 	HTTPRequestDuration metric.Float64Histogram
 	HTTPRequestCount    metric.Int64Counter
 	HTTPRequestSize     metric.Int64Histogram
 	HTTPResponseSize    metric.Int64Histogram
 	HTTPActiveRequests  metric.Int64UpDownCounter
 
-	// ========================================
-	// Business Metrics
-	// ========================================
 	AssetUploadTotal        metric.Int64Counter
 	AssetUploadDuration     metric.Float64Histogram
 	AssetProcessingTotal    metric.Int64Counter
@@ -37,16 +31,10 @@ var (
 	AssetProcessingDuration metric.Float64Histogram
 	AssetSizeBytes          metric.Int64Histogram
 
-	// ========================================
-	// Storage Metrics
-	// ========================================
 	StorageOperationDuration metric.Float64Histogram
 	StorageOperationTotal    metric.Int64Counter
 	StorageOperationErrors   metric.Int64Counter
 
-	// ========================================
-	// Database Metrics
-	// ========================================
 	DBQueryDuration     metric.Float64Histogram
 	DBQueryTotal        metric.Int64Counter
 	DBQueryErrors       metric.Int64Counter
@@ -55,18 +43,12 @@ var (
 	DBTransactionTotal  metric.Int64Counter
 	DBTransactionErrors metric.Int64Counter
 
-	// ========================================
-	// Queue Metrics
-	// ========================================
 	QueueMessagePublished metric.Int64Counter
 	QueueMessageConsumed  metric.Int64Counter
 	QueueMessageFailed    metric.Int64Counter
 	QueueDepth            metric.Int64ObservableGauge
 	QueueProcessingLag    metric.Float64Histogram
 
-	// ========================================
-	// System Metrics
-	// ========================================
 	SystemCPUUsage        metric.Float64ObservableGauge
 	SystemMemoryUsage     metric.Int64ObservableGauge
 	SystemGoroutineCount  metric.Int64ObservableGauge
@@ -117,12 +99,33 @@ func InitMetrics(ctx context.Context, logger utils.Logger) func(context.Context)
 		res = resource.Default()
 	}
 
+	httpLatencyBuckets := []float64{
+		0.05, // 50ms
+		0.1,
+		0.2,
+		0.5,
+		1,
+		2,
+		5,
+		10,
+	}
+
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(
-			sdkmetric.NewPeriodicReader(
-				exp,
-				sdkmetric.WithInterval(15*time.Second),
+			sdkmetric.NewPeriodicReader(exp),
+		),
+		sdkmetric.WithView(
+			sdkmetric.NewView(
+				sdkmetric.Instrument{
+					Name: "http.server.request.duration",
+					Kind: sdkmetric.InstrumentKindHistogram,
+				},
+				sdkmetric.Stream{
+					Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+						Boundaries: httpLatencyBuckets,
+					},
+				},
 			),
 		),
 	)
@@ -195,7 +198,7 @@ func initBusinessMetrics(meter metric.Meter, logger utils.Logger) {
 	var err error
 
 	AssetUploadTotal, err = meter.Int64Counter(
-		"mpiper.asset.upload.total",
+		"asset.upload.total",
 		metric.WithDescription("Total number of asset uploads"),
 		metric.WithUnit("{upload}"),
 	)
@@ -204,7 +207,7 @@ func initBusinessMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	AssetUploadDuration, err = meter.Float64Histogram(
-		"mpiper.asset.upload.duration",
+		"asset.upload.duration",
 		metric.WithDescription("Duration of asset upload operations"),
 		metric.WithUnit("s"),
 	)
@@ -213,7 +216,7 @@ func initBusinessMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	AssetProcessingTotal, err = meter.Int64Counter(
-		"mpiper.asset.processing.total",
+		"asset.processing.total",
 		metric.WithDescription("Total number of assets processed"),
 		metric.WithUnit("{asset}"),
 	)
@@ -222,7 +225,7 @@ func initBusinessMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	AssetProcessingSuccess, err = meter.Int64Counter(
-		"mpiper.asset.processing.success",
+		"asset.processing.success",
 		metric.WithDescription("Number of successfully processed assets"),
 		metric.WithUnit("{asset}"),
 	)
@@ -231,7 +234,7 @@ func initBusinessMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	AssetProcessingFailed, err = meter.Int64Counter(
-		"mpiper.asset.processing.failed",
+		"asset.processing.failed",
 		metric.WithDescription("Number of failed asset processing attempts"),
 		metric.WithUnit("{asset}"),
 	)
@@ -240,7 +243,7 @@ func initBusinessMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	AssetProcessingDuration, err = meter.Float64Histogram(
-		"mpiper.asset.processing.duration",
+		"asset.processing.duration",
 		metric.WithDescription("Duration of asset processing"),
 		metric.WithUnit("s"),
 	)
@@ -249,7 +252,7 @@ func initBusinessMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	AssetSizeBytes, err = meter.Int64Histogram(
-		"mpiper.asset.size",
+		"asset.size",
 		metric.WithDescription("Size of assets in bytes"),
 		metric.WithUnit("By"),
 	)
@@ -262,7 +265,7 @@ func initStorageMetrics(meter metric.Meter, logger utils.Logger) {
 	var err error
 
 	StorageOperationDuration, err = meter.Float64Histogram(
-		"mpiper.storage.operation.duration",
+		"storage.operation.duration",
 		metric.WithDescription("Duration of storage operations"),
 		metric.WithUnit("s"),
 	)
@@ -271,7 +274,7 @@ func initStorageMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	StorageOperationTotal, err = meter.Int64Counter(
-		"mpiper.storage.operation.total",
+		"storage.operation.total",
 		metric.WithDescription("Total number of storage operations"),
 		metric.WithUnit("{operation}"),
 	)
@@ -280,7 +283,7 @@ func initStorageMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	StorageOperationErrors, err = meter.Int64Counter(
-		"mpiper.storage.operation.errors",
+		"storage.operation.errors",
 		metric.WithDescription("Number of storage operation errors"),
 		metric.WithUnit("{error}"),
 	)
@@ -293,7 +296,7 @@ func initDatabaseMetrics(meter metric.Meter, logger utils.Logger) {
 	var err error
 
 	DBQueryDuration, err = meter.Float64Histogram(
-		"mpiper.db.query.duration",
+		"db.query.duration",
 		metric.WithDescription("Duration of database queries"),
 		metric.WithUnit("s"),
 	)
@@ -302,7 +305,7 @@ func initDatabaseMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	DBQueryTotal, err = meter.Int64Counter(
-		"mpiper.db.query.total",
+		"db.query.total",
 		metric.WithDescription("Total number of database queries"),
 		metric.WithUnit("{query}"),
 	)
@@ -311,7 +314,7 @@ func initDatabaseMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	DBQueryErrors, err = meter.Int64Counter(
-		"mpiper.db.query.errors",
+		"db.query.errors",
 		metric.WithDescription("Number of database query errors"),
 		metric.WithUnit("{error}"),
 	)
@@ -320,7 +323,7 @@ func initDatabaseMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	DBConnectionsActive, err = meter.Int64UpDownCounter(
-		"mpiper.db.connections.active",
+		"db.connections.active",
 		metric.WithDescription("Number of active database connections"),
 		metric.WithUnit("{connection}"),
 	)
@@ -329,7 +332,7 @@ func initDatabaseMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	DBConnectionsIdle, err = meter.Int64UpDownCounter(
-		"mpiper.db.connections.idle",
+		"db.connections.idle",
 		metric.WithDescription("Number of idle database connections"),
 		metric.WithUnit("{connection}"),
 	)
@@ -338,7 +341,7 @@ func initDatabaseMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	DBTransactionTotal, err = meter.Int64Counter(
-		"mpiper.db.transaction.total",
+		"db.transaction.total",
 		metric.WithDescription("Total number of database transactions"),
 		metric.WithUnit("{transaction}"),
 	)
@@ -347,7 +350,7 @@ func initDatabaseMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	DBTransactionErrors, err = meter.Int64Counter(
-		"mpiper.db.transaction.errors",
+		"db.transaction.errors",
 		metric.WithDescription("Number of database transaction errors"),
 		metric.WithUnit("{error}"),
 	)
@@ -360,7 +363,7 @@ func initQueueMetrics(meter metric.Meter, logger utils.Logger) {
 	var err error
 
 	QueueMessagePublished, err = meter.Int64Counter(
-		"mpiper.queue.message.published",
+		"queue.message.published",
 		metric.WithDescription("Number of messages published to queue"),
 		metric.WithUnit("{message}"),
 	)
@@ -369,7 +372,7 @@ func initQueueMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	QueueMessageConsumed, err = meter.Int64Counter(
-		"mpiper.queue.message.consumed",
+		"queue.message.consumed",
 		metric.WithDescription("Number of messages consumed from queue"),
 		metric.WithUnit("{message}"),
 	)
@@ -378,7 +381,7 @@ func initQueueMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	QueueMessageFailed, err = meter.Int64Counter(
-		"mpiper.queue.message.failed",
+		"queue.message.failed",
 		metric.WithDescription("Number of failed queue messages"),
 		metric.WithUnit("{message}"),
 	)
@@ -387,7 +390,7 @@ func initQueueMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	QueueProcessingLag, err = meter.Float64Histogram(
-		"mpiper.queue.processing.lag",
+		"queue.processing.lag",
 		metric.WithDescription("Queue message processing lag in seconds"),
 		metric.WithUnit("s"),
 	)
@@ -403,7 +406,7 @@ func initSystemMetrics(meter metric.Meter, logger utils.Logger) {
 	var memStats runtime.MemStats
 
 	SystemMemoryUsage, err = meter.Int64ObservableGauge(
-		"mpiper.system.memory.usage",
+		"system.memory.usage",
 		metric.WithDescription("System memory usage in bytes"),
 		metric.WithUnit("By"),
 		metric.WithInt64Callback(func(_ context.Context, observer metric.Int64Observer) error {
@@ -417,7 +420,7 @@ func initSystemMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	SystemGoroutineCount, err = meter.Int64ObservableGauge(
-		"mpiper.system.goroutine.count",
+		"system.goroutine.count",
 		metric.WithDescription("Number of goroutines"),
 		metric.WithUnit("{goroutine}"),
 		metric.WithInt64Callback(func(_ context.Context, observer metric.Int64Observer) error {
@@ -430,7 +433,7 @@ func initSystemMetrics(meter metric.Meter, logger utils.Logger) {
 	}
 
 	SystemGCPauseDuration, err = meter.Float64Histogram(
-		"mpiper.system.gc.pause.duration",
+		"system.gc.pause.duration",
 		metric.WithDescription("GC pause duration in seconds"),
 		metric.WithUnit("s"),
 	)
