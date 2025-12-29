@@ -7,6 +7,7 @@ from worker.consumer.consumer import Consumer
 from worker.consumer.db import PgPool
 from worker.storage.base import StorageX
 from worker.storage.gcs import GCSStorage
+from worker.utils import metrics as worker_metrics
 from urllib.parse import quote_plus
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,9 @@ def main():
             time.sleep(1)
 
     logger.info("exiting")
+    
+    # Shutdown metrics on exit
+    worker_metrics.shutdown_metrics()
 
 
 if __name__ == "__main__":
