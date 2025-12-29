@@ -34,7 +34,7 @@ Start-Sleep -Seconds 5
 Write-Host "`n1. Generating test requests to API..." -ForegroundColor Cyan
 Write-Host "--------------------------------------" -ForegroundColor Gray
 
-$apiBaseUrl = "http://localhost:8080"
+$apiBaseUrl = "http://localhost:5010"
 
 Test-Endpoint "$apiBaseUrl/" "Root endpoint"
 Test-Endpoint "$apiBaseUrl/api/v1" "API v1 endpoint"
