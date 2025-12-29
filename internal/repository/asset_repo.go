@@ -12,8 +12,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/rndmcodeguy20/mpiper/internal/metrics"
 	appErrors "github.com/rndmcodeguy20/mpiper/pkg/errors"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 type AssetType string
@@ -96,6 +99,7 @@ func (r *assetRepo) GetDB() *sqlx.DB {
 }
 
 func (r *assetRepo) CreateAsset(ctx context.Context, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error {
+	start := time.Now()
 	query := `INSERT INTO assets (asset_id, original_url, type, mime_type, status, size_bytes) VALUES ($1, $2, $3, $4, $5, $6);`
 	_, err := r.db.ExecContext(
 		ctx,
@@ -107,14 +111,36 @@ func (r *assetRepo) CreateAsset(ctx context.Context, id uuid.UUID, url string, s
 		StatusUploading,
 		size,
 	)
+
+	// Record database metrics
+	duration := time.Since(start).Seconds()
+	attrs := []attribute.KeyValue{
+		attribute.String("db.operation", "insert"),
+		attribute.String("db.table", "assets"),
+	}
+
 	if err != nil {
+		attrs = append(attrs, attribute.String("db.status", "error"))
+		if metrics.DBQueryErrors != nil {
+			metrics.DBQueryErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
 		r.logger.Sugar().Errorf("Failed to create asset: %v", err)
 		return appErrors.NewInternalServerError("Could not insert row", err)
 	}
+
+	attrs = append(attrs, attribute.String("db.status", "success"))
+	if metrics.DBQueryTotal != nil {
+		metrics.DBQueryTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+	}
+	if metrics.DBQueryDuration != nil {
+		metrics.DBQueryDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
+	}
+
 	return nil
 }
 
 func (r *assetRepo) CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error {
+	start := time.Now()
 	query := `INSERT INTO assets (asset_id, original_url, type, mime_type, status, size_bytes) VALUES ($1, $2, $3, $4, $5, $6);`
 	_, err := tx.ExecContext(
 		ctx,
@@ -126,10 +152,31 @@ func (r *assetRepo) CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID,
 		StatusUploading,
 		size,
 	)
+
+	// Record database metrics
+	duration := time.Since(start).Seconds()
+	attrs := []attribute.KeyValue{
+		attribute.String("db.operation", "insert"),
+		attribute.String("db.table", "assets"),
+	}
+
 	if err != nil {
+		attrs = append(attrs, attribute.String("db.status", "error"))
+		if metrics.DBQueryErrors != nil {
+			metrics.DBQueryErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
 		r.logger.Sugar().Errorf("Failed to create asset in transaction: %v", err)
 		return appErrors.NewInternalServerError("Could not insert row in transaction", err)
 	}
+
+	attrs = append(attrs, attribute.String("db.status", "success"))
+	if metrics.DBQueryTotal != nil {
+		metrics.DBQueryTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+	}
+	if metrics.DBQueryDuration != nil {
+		metrics.DBQueryDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
+	}
+
 	return nil
 }
 
