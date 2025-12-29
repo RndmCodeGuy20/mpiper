@@ -19,6 +19,10 @@ dependencies = [
     "pydantic",
     "structlog",
     "requests",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20.0",
+    "opentelemetry-instrumentation>=0.41b0",
 ]
 
 [build-system]
@@ -39,6 +43,9 @@ pillow = "^12.0.0"
 psycopg-pool = "^3.3.0"
 google-cloud-storage = "^3.7.0"
 python-dotenv = "^1.2.1"
+opentelemetry-api = "^1.39.1"
+opentelemetry-sdk = "^1.39.1"
+opentelemetry-exporter-otlp = "^1.39.1"
 
 [tool.poetry.scripts]
 mpiper_consumer = "worker.consumer:main"
