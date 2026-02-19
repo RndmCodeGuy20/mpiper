@@ -3,6 +3,7 @@ package storagex
 import (
 	"context"
 	"io"
+	"time"
 
 	"cloud.google.com/go/storage"
 )
@@ -27,4 +28,5 @@ type StorageX interface {
 	GeneratePresignedURL(ctx context.Context, bucket, key string, options *PresignedURLOptions) (string, error)
 	PublicURL(ctx context.Context, bucket, key string) (string, error)
 	DeleteObject(ctx context.Context, bucket, key string) error
+	recordOperationMetrics(ctx context.Context, operation string, success bool, durationSeconds time.Duration)
 }

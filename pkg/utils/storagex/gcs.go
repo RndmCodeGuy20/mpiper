@@ -25,6 +25,7 @@ type gcsStorage struct {
 	secretAccessID string
 	privateKey     []byte
 	logger         *utils.Logger
+	provider       string
 }
 
 func NewGCSStorage(ctx context.Context, projectID string) (StorageX, error) {
@@ -42,6 +43,12 @@ func NewGCSStorageFromServiceAccountJSON(ctx context.Context, serviceAccountJSON
 	if err != nil {
 		return nil, err
 	}
+	defer func(client *storage.Client) {
+		err := client.Close()
+		if err != nil {
+			utils.NewLogger().Error("Failed to close GCS client", zap.Error(err))
+		}
+	}(client)
 
 	data, err := os.ReadFile(serviceAccountJSONPath)
 	if err != nil {
@@ -102,18 +109,7 @@ func (g *gcsStorage) PutObject(ctx context.Context, bucket, key string, data io.
 		span.SetStatus(codes.Error, "Failed to write object data")
 
 		// Record error metric
-		duration := time.Since(start).Seconds()
-		attrs := []attribute.KeyValue{
-			attribute.String("storage.operation", "put"),
-			attribute.String("storage.provider", "gcs"),
-			attribute.String("storage.status", "error"),
-		}
-		if metrics.StorageOperationErrors != nil {
-			metrics.StorageOperationErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
-		}
-		if metrics.StorageOperationDuration != nil {
-			metrics.StorageOperationDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
-		}
+		g.recordOperationMetrics(ctx, "put", false, time.Since(start))
 
 		return err
 	}
@@ -125,35 +121,13 @@ func (g *gcsStorage) PutObject(ctx context.Context, bucket, key string, data io.
 		span.SetStatus(codes.Error, "Failed to close writer")
 
 		// Record error metric
-		duration := time.Since(start).Seconds()
-		attrs := []attribute.KeyValue{
-			attribute.String("storage.operation", "put"),
-			attribute.String("storage.provider", "gcs"),
-			attribute.String("storage.status", "error"),
-		}
-		if metrics.StorageOperationErrors != nil {
-			metrics.StorageOperationErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
-		}
-		if metrics.StorageOperationDuration != nil {
-			metrics.StorageOperationDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
-		}
+		g.recordOperationMetrics(ctx, "put", false, time.Since(start))
 
 		return err
 	}
 
 	// Record success metrics
-	duration := time.Since(start).Seconds()
-	attrs := []attribute.KeyValue{
-		attribute.String("storage.operation", "put"),
-		attribute.String("storage.provider", "gcs"),
-		attribute.String("storage.status", "success"),
-	}
-	if metrics.StorageOperationTotal != nil {
-		metrics.StorageOperationTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
-	}
-	if metrics.StorageOperationDuration != nil {
-		metrics.StorageOperationDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
-	}
+	g.recordOperationMetrics(ctx, "put", true, time.Since(start))
 
 	span.SetStatus(codes.Ok, "Object uploaded successfully")
 	return nil
@@ -312,4 +286,33 @@ func (g *gcsStorage) DeleteObject(ctx context.Context, bucket, key string) error
 
 	span.SetStatus(codes.Ok, "Object deleted successfully")
 	return nil
+}
+
+// recordOperationMetrics records metrics for storage operations, including success/failure counts and operation duration.
+func (g *gcsStorage) recordOperationMetrics(ctx context.Context, operation string, success bool, duration time.Duration) {
+	status := "success"
+	if !success {
+		status = "error"
+	}
+
+	attrs := []attribute.KeyValue{
+		attribute.String("storage.operation", operation),
+		attribute.String("storage.provider", "gcs"),
+		attribute.String("storage.status", status),
+	}
+
+	if success {
+		if metrics.StorageOperationTotal != nil {
+			metrics.StorageOperationTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+	} else {
+		if metrics.StorageOperationErrors != nil {
+			metrics.StorageOperationErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+	}
+
+	if metrics.StorageOperationDuration != nil {
+		metrics.StorageOperationDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
+	}
+
 }
