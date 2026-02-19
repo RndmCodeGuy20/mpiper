@@ -32,6 +32,9 @@ func main() {
 		panic(err)
 	}
 
+	serverCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	baseLogger := utils.NewLogger().With(
 		zap.String("version", Version),
 		zap.String("commit_hash", CommitHash),
@@ -47,7 +50,8 @@ func main() {
 
 	baseLogger.Sugar().Infof("Starting %s server on https://%s:%d in %s mode", "MPiper", cfg.Server.Host, cfg.Server.Port, cfg.Environment)
 
-	tracerCtx := context.Background()
+	// Initialize tracer
+	tracerCtx := serverCtx
 	shutdownTracer := metrics.InitTracer(tracerCtx, *baseLogger)
 	defer func() {
 		err := shutdownTracer(tracerCtx)
@@ -57,7 +61,7 @@ func main() {
 	}()
 
 	// Initialize metrics
-	metricsCtx := context.Background()
+	metricsCtx := serverCtx
 	shutdownMetrics := metrics.InitMetrics(metricsCtx, *baseLogger)
 	defer func() {
 		err := shutdownMetrics(metricsCtx)
@@ -78,9 +82,6 @@ func main() {
 	}(db)
 
 	srv := server.NewServer(db, cfg)
-	serverCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	go func() {
 		if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			baseLogger.Fatal("Server error: ", zap.Error(err))

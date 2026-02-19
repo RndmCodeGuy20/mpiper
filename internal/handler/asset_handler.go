@@ -29,10 +29,14 @@ func NewAssetHandler(svc service.AssetService, logger *utils.Logger) *AssetHandl
 }
 
 func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	tracer := otel.Tracer("mpiper-api")
 
 	ctx, span := tracer.Start(r.Context(), "AssetHandler.CreateAsset")
 	defer span.End()
+
+	timeoutCtx, cancelFn := utils.GetTimeoutContext(ctx, 30)
+	defer cancelFn()
 
 	// Record request size
 	//if r.ContentLength > 0 && metrics.HTTPRequestSize != nil {
@@ -49,6 +53,10 @@ func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
 	)
 
 	start := time.Now()
+	defer func() {
+		metrics.AssetUploadDuration.Record(ctx, time.Since(start).Seconds())
+	}()
+
 	metrics.AssetUploadTotal.Add(ctx, 1)
 
 	var req models.UploadAssetRequest
@@ -81,17 +89,19 @@ func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	timeoutCtx, cancelFn := utils.GetTimeoutContext(ctx, 30)
-	defer cancelFn()
+	if err := timeoutCtx.Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Request cancelled")
+		return
+	}
 
 	res, err := h.svc.CreateAsset(timeoutCtx, req)
-	metrics.AssetUploadDuration.Record(ctx, time.Since(start).Seconds())
 
 	if err != nil {
 		h.logger.Error("Failed to create asset", zap.Error(err))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to create asset")
-		metrics.AssetProcessingFailed.Add(ctx, 1)
+		metrics.AssetProcessingFailed.Add(timeoutCtx, 1)
 		utils.RespondJSON(
 			w,
 			map[string]string{"status": "error", "message": "Failed to create asset", "error": err.Error()},
@@ -102,7 +112,7 @@ func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
 	if res == nil {
 		h.logger.Error("CreateAsset returned nil response without error")
 		span.SetStatus(codes.Error, "Nil response from CreateAsset")
-		metrics.AssetProcessingSuccess.Add(ctx, 1)
+		metrics.AssetProcessingFailed.Add(timeoutCtx, 1)
 		utils.RespondJSON(
 			w,
 			map[string]string{"status": "error", "message": "Internal server error: nil response from CreateAsset"},
@@ -128,6 +138,9 @@ func (h *AssetHandler) MarkAssetUploaded(w http.ResponseWriter, r *http.Request)
 	ctx, span := tracer.Start(r.Context(), "AssetHandler.MarkAssetUploaded")
 	defer span.End()
 
+	timeoutCtx, cancelFn := utils.GetTimeoutContext(ctx, 15)
+	defer cancelFn()
+
 	assetID := chi.URLParam(r, "assetID")
 	if assetID == "" {
 		span.SetStatus(codes.Error, "Asset ID is required")
@@ -136,9 +149,6 @@ func (h *AssetHandler) MarkAssetUploaded(w http.ResponseWriter, r *http.Request)
 	}
 
 	span.SetAttributes(attribute.String("asset_id", assetID))
-
-	timeoutCtx, cancelFn := utils.GetTimeoutContext(ctx, 15)
-	defer cancelFn()
 
 	parsedID, err := uuid.Parse(assetID)
 	if err != nil {
