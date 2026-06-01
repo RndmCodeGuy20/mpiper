@@ -1,0 +1,21 @@
+{
+  "agents": {
+    "crawler": {
+      "model": "claude-haiku-4-5-20251001",
+      "note": "mostly tool calls, minimal reasoning needed"
+    },
+    "reasoner": {
+      "model": "claude-opus-4-8",
+      "note": "deep assessment, use the best model"
+    },
+    "interviewer": {
+      "model": "claude-sonnet-4-6",
+      "note": "conversational, needs to be good but not Opus"
+    },
+    "orchestrator": {
+      "model": "claude-sonnet-4-6",
+      "note": "routing only, Sonnet is fine"
+    }
+  }
+}
+

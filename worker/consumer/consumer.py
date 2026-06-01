@@ -230,6 +230,7 @@ class Consumer:
                         "UPDATE jobs SET status = 'pending', last_error = %s, updated_at = now() WHERE job_id = %s",
                         (str(exc), str(job_id)),
                     )
+                conn.commit()
             # Leave the Redis message unacked so it remains in the pending list.
             return
 
@@ -244,6 +245,7 @@ class Consumer:
                 "UPDATE assets SET status = 'ready', updated_at = now() WHERE asset_id = %s",
                 (asset_id,),
             )
+            conn.commit()
 
         # Acknowledge the Redis stream message.
         self.redis.xack(self.cfg.stream_name, self.cfg.consumer_group, msg_id)

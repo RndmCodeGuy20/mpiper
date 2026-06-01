@@ -27,102 +27,56 @@ func (w *metricsResponseWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// MetricsMiddleware records HTTP metrics for incoming requests.
-// Safe for Prometheus cardinality and production traffic.
-func MetricsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+func MetricsMiddleware(m *metrics.Metrics) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
 
-		route := chi.RouteContext(r.Context()).RoutePattern()
-		if route == "" {
-			route = "unknown"
-		}
-
-		wrapped := &metricsResponseWriter{
-			ResponseWriter: w,
-			statusCode:     http.StatusOK,
-		}
-
-		attrs := []attribute.KeyValue{
-			attribute.String("http.method", r.Method),
-			attribute.String("http.route", route),
-		}
-
-		// Active requests
-		if metrics.HTTPActiveRequests != nil {
-			metrics.HTTPActiveRequests.Add(
-				r.Context(),
-				1,
-				metric.WithAttributes(attrs...),
-			)
-			defer metrics.HTTPActiveRequests.Add(
-				r.Context(),
-				-1,
-				metric.WithAttributes(attrs...),
-			)
-		}
-
-		// Panic safety: still emit metrics
-		defer func() {
-			if rec := recover(); rec != nil {
-				wrapped.statusCode = http.StatusInternalServerError
-				recordHTTPMetrics(r, wrapped, start, attrs)
-				panic(rec)
+			route := chi.RouteContext(r.Context()).RoutePattern()
+			if route == "" {
+				route = "unknown"
 			}
-		}()
 
-		next.ServeHTTP(wrapped, r)
+			wrapped := &metricsResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 
-		recordHTTPMetrics(r, wrapped, start, attrs)
-	})
+			attrs := []attribute.KeyValue{
+				attribute.String("http.method", r.Method),
+				attribute.String("http.route", route),
+			}
+
+			if m != nil {
+				m.HTTPActiveRequests.Add(r.Context(), 1, metric.WithAttributes(attrs...))
+				defer m.HTTPActiveRequests.Add(r.Context(), -1, metric.WithAttributes(attrs...))
+			}
+
+			defer func() {
+				if rec := recover(); rec != nil {
+					wrapped.statusCode = http.StatusInternalServerError
+					recordHTTPMetrics(m, r, wrapped, start, attrs)
+					panic(rec)
+				}
+			}()
+
+			next.ServeHTTP(wrapped, r)
+			recordHTTPMetrics(m, r, wrapped, start, attrs)
+		})
+	}
 }
 
-func recordHTTPMetrics(
-	r *http.Request,
-	w *metricsResponseWriter,
-	start time.Time,
-	baseAttrs []attribute.KeyValue,
-) {
+func recordHTTPMetrics(m *metrics.Metrics, r *http.Request, w *metricsResponseWriter, start time.Time, baseAttrs []attribute.KeyValue) {
+	if m == nil {
+		return
+	}
 	duration := time.Since(start).Seconds()
+	attrs := append(baseAttrs, attribute.Int("http.status_code", w.statusCode))
 
-	attrs := append(
-		baseAttrs,
-		attribute.Int("http.status_code", w.statusCode),
-	)
+	m.HTTPRequestDuration.Record(r.Context(), duration, metric.WithAttributes(attrs...))
+	m.HTTPRequestCount.Add(r.Context(), 1, metric.WithAttributes(attrs...))
 
-	if metrics.HTTPRequestDuration != nil {
-		metrics.HTTPRequestDuration.Record(
-			r.Context(),
-			duration,
-			metric.WithAttributes(attrs...),
-		)
+	reqSize := r.ContentLength
+	if reqSize < 0 {
+		reqSize = 0
 	}
-
-	if metrics.HTTPRequestCount != nil {
-		metrics.HTTPRequestCount.Add(
-			r.Context(),
-			1,
-			metric.WithAttributes(attrs...),
-		)
-	}
-
-	if metrics.HTTPRequestSize != nil {
-		reqSize := r.ContentLength
-		if reqSize < 0 {
-			reqSize = 0
-		}
-		metrics.HTTPRequestSize.Record(
-			r.Context(),
-			reqSize,
-			metric.WithAttributes(attrs...),
-		)
-	}
-
-	if metrics.HTTPResponseSize != nil {
-		metrics.HTTPResponseSize.Record(
-			r.Context(),
-			w.bytesWritten,
-			metric.WithAttributes(attrs...),
-		)
-	}
+	m.HTTPRequestSize.Record(r.Context(), reqSize, metric.WithAttributes(attrs...))
+	m.HTTPResponseSize.Record(r.Context(), w.bytesWritten, metric.WithAttributes(attrs...))
 }

@@ -108,3 +108,5 @@ tests/logs/
 coverage-reports/
 coverage
 API_DOCUMENTATION.md
+
+.code_graph/

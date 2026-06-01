@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS jobs;
+DROP TABLE IF EXISTS variants.video;
+DROP TABLE IF EXISTS variants.image;
+DROP SCHEMA IF EXISTS variants;
+DROP TABLE IF EXISTS assets;

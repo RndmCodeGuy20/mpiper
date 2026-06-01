@@ -1,12 +1,11 @@
-
-version: '3'
+version: "3"
 
 # Variables
 vars:
   APP_NAME: mpiper
   BUILD_DIR: build
   MAIN_PATH: cmd/server/main.go
-  
+
   # Dynamic variables
   BUILD_TIME:
     sh: |
@@ -24,7 +23,7 @@ vars:
     sh: |
       git rev-parse --short HEAD 2>/dev/null || echo unknown
   VERSION:
-    sh: toml get --toml-path mpiper.toml version
+    sh: toml get --toml-path relay.toml version 2>/dev/null || echo "0.0.0"
 
   # Build flags
   LDFLAGS: >-
@@ -162,18 +161,18 @@ tasks:
   docker-build-worker:
     desc: Build Docker image for worker
     cmds:
-      - docker build 
-        --build-arg ENV=development 
-        --build-arg VERSION={{.VERSION}} 
-        --build-arg BUILD_TIME={{.BUILD_TIME}} 
+      - docker build
+        --build-arg ENV=development
+        --build-arg VERSION={{.VERSION}}
+        --build-arg BUILD_TIME={{.BUILD_TIME}}
         --build-arg COMMIT_HASH={{.GIT_COMMIT}}
-        -t {{.APP_NAME}}-worker:{{.VERSION}} 
+        -t {{.APP_NAME}}-worker:{{.VERSION}}
         -f deploy/docker/worker.dockerfile .
 
   docker-run-worker:
     desc: Run Docker container for worker
     cmds:
-      - docker run 
+      - docker run
         --rm
         --name {{.APP_NAME}}_worker_dev
         --env-file .env.local
@@ -189,10 +188,10 @@ tasks:
   docker-build:
     desc: Build Docker image
     cmds:
-      - docker build 
-        --build-arg ENV=development 
-        --build-arg VERSION={{.VERSION}} 
-        --build-arg BUILD_TIME={{.BUILD_TIME}} 
+      - docker build
+        --build-arg ENV=development
+        --build-arg VERSION={{.VERSION}}
+        --build-arg BUILD_TIME={{.BUILD_TIME}}
         --build-arg COMMIT_HASH={{.GIT_COMMIT}}
         --build-arg HOST=0.0.0.0
         -t {{.APP_NAME}}:{{.VERSION}} .
@@ -200,9 +199,9 @@ tasks:
   docker-run:
     desc: Run Docker container
     cmds:
-      - docker run 
+      - docker run
         --rm
-        -p 5010:5010 
+        -p 5010:5010
         --name {{.APP_NAME}}_dev
         --env-file .env.local
         -e DB_HOST=host.docker.internal
