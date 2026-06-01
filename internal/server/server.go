@@ -7,28 +7,34 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/rndmcodeguy20/mpiper/internal/config"
+	"github.com/rndmcodeguy20/mpiper/internal/metrics"
 	"github.com/rndmcodeguy20/mpiper/internal/router"
-	"github.com/rndmcodeguy20/mpiper/pkg/utils"
+	applogger "github.com/rndmcodeguy20/mpiper/pkg/logger"
+	"go.uber.org/zap"
 )
 
 type AppServer struct {
 	db         *sqlx.DB
-	logger     *utils.Logger
+	logger     *zap.Logger
 	httpServer *http.Server
 }
 
-func NewServer(db *sqlx.DB, cfg config.EnvConfig) *AppServer {
-	r := router.NewRouter(cfg, db)
-	logger := utils.NewLogger()
+func NewServer(db *sqlx.DB, cfg config.EnvConfig, m *metrics.Metrics) *AppServer {
+	cfg2 := config.MustGet()
+	l := applogger.New(applogger.Config{
+		ServiceName: cfg2.Otel.ServiceName,
+		Environment: cfg2.Environment,
+		Level:       applogger.ParseLevel(cfg2.LogLevel),
+	})
 
 	srv := &http.Server{
 		Addr:    cfg.Server.Host + ":" + strconv.Itoa(cfg.Server.Port),
-		Handler: r,
+		Handler: router.NewRouter(cfg, db, m),
 	}
 
 	return &AppServer{
 		db:         db,
-		logger:     logger,
+		logger:     l,
 		httpServer: srv,
 	}
 }

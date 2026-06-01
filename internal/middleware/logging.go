@@ -5,78 +5,58 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-chi/chi/v5/middleware"
+	chiMiddleware "github.com/go-chi/chi/v5/middleware"
+	applogger "github.com/rndmcodeguy20/mpiper/pkg/logger"
 	"go.uber.org/zap"
-
-	"github.com/rndmcodeguy20/mpiper/pkg/utils"
 )
 
-// contextKey is a custom type for context keys
-type contextKey string
-
-const loggerKey contextKey = "logger"
-
-// LoggerFromContext retrieves the logger from context
-func LoggerFromContext(ctx context.Context) *utils.Logger {
-	if logger, ok := ctx.Value(loggerKey).(*utils.Logger); ok {
-		return logger
-	}
-	// Return default logger if not found
-	return utils.NewLogger()
+// LoggerFromContext retrieves the request-scoped logger from ctx.
+func LoggerFromContext(ctx context.Context) *zap.Logger {
+	return applogger.FromContext(ctx)
 }
 
-// LoggerMiddleware integrates with Chi's RequestID and other middleware
-func LoggerMiddleware(logger *utils.Logger) func(next http.Handler) http.Handler {
+// LoggerMiddleware injects a request-scoped logger into the context and logs
+// request/response details.
+func LoggerMiddleware(l *zap.Logger) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
-			// Get request ID from Chi middleware (if available)
-			requestID := middleware.GetReqID(r.Context())
+			requestID := chiMiddleware.GetReqID(r.Context())
 			if requestID == "" {
 				requestID = generateRequestID()
 			}
 
-			// Create context logger with all Chi-provided fields
-			ctxLogger := logger.WithFields(map[string]interface{}{
-				"request_id":  requestID,
-				"method":      r.Method,
-				"path":        r.URL.Path,
-				"remote_addr": r.RemoteAddr,
-				"user_agent":  r.UserAgent(),
-				"proto":       r.Proto,
-			})
+			reqLogger := l.With(
+				zap.String("request_id", requestID),
+				zap.String("method", r.Method),
+				zap.String("path", r.URL.Path),
+				zap.String("remote_addr", r.RemoteAddr),
+				zap.String("user_agent", r.UserAgent()),
+				zap.String("proto", r.Proto),
+			)
 
-			// Store logger in context for downstream handlers
-			ctx := context.WithValue(r.Context(), loggerKey, ctxLogger)
+			ctx := applogger.WithLogger(r.Context(), reqLogger)
 			r = r.WithContext(ctx)
 
-			// Wrap response writer to capture status and size
-			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-
-			// Add request ID to response headers
+			ww := chiMiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			ww.Header().Set("X-Request-ID", requestID)
 
-			// Log incoming request
-			ctxLogger.Info("Incoming request")
+			reqLogger.Info("Incoming request")
 
-			// Call next handler
 			next.ServeHTTP(ww, r)
 
-			// Calculate duration
+			status := ww.Status()
 			duration := time.Since(start)
 
-			// Determine log level based on status code
-			status := ww.Status()
-			logFunc := ctxLogger.Info
+			logFn := reqLogger.Info
 			if status >= 500 {
-				logFunc = ctxLogger.Error
+				logFn = reqLogger.Error
 			} else if status >= 400 {
-				logFunc = ctxLogger.Warn
+				logFn = reqLogger.Warn
 			}
 
-			// Log completed request
-			logFunc("Request completed",
+			logFn("Request completed",
 				zap.Int("status", status),
 				zap.String("duration", durationInUnits(duration)),
 				zap.Int("bytes_written", ww.BytesWritten()),

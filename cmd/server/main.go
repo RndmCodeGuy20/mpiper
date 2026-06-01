@@ -14,7 +14,7 @@ import (
 	"github.com/rndmcodeguy20/mpiper/internal/database"
 	"github.com/rndmcodeguy20/mpiper/internal/metrics"
 	"github.com/rndmcodeguy20/mpiper/internal/server"
-	"github.com/rndmcodeguy20/mpiper/pkg/utils"
+	"github.com/rndmcodeguy20/mpiper/pkg/logger"
 	"go.uber.org/zap"
 )
 
@@ -31,41 +31,42 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	config.Init(cfg)
 
 	serverCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	baseLogger := utils.NewLogger().With(
+	baseLogger := logger.New(logger.Config{
+		ServiceName: cfg.Otel.ServiceName,
+		Environment: cfg.Environment,
+		Level:       logger.ParseLevel(cfg.LogLevel),
+		EnableOTel:  true,
+	}).With(
 		zap.String("version", Version),
 		zap.String("commit_hash", CommitHash),
 		zap.String("build_time", BuildTime),
 		zap.String("author", Author),
 	)
-	defer func(l *utils.Logger) {
-		err := l.Close()
-		if err != nil {
+	defer func() {
+		if err := logger.Sync(baseLogger); err != nil {
 			panic(err)
 		}
-	}(baseLogger)
+	}()
 
 	baseLogger.Sugar().Infof("Starting %s server on https://%s:%d in %s mode", "MPiper", cfg.Server.Host, cfg.Server.Port, cfg.Environment)
 
-	// Initialize tracer
 	tracerCtx := serverCtx
-	shutdownTracer := metrics.InitTracer(tracerCtx, *baseLogger)
+	shutdownTracer := metrics.InitTracer(tracerCtx, baseLogger)
 	defer func() {
-		err := shutdownTracer(tracerCtx)
-		if err != nil {
+		if err := shutdownTracer(tracerCtx); err != nil {
 			baseLogger.Sugar().Errorf("Failed to shut down tracer: %v", err)
 		}
 	}()
 
-	// Initialize metrics
 	metricsCtx := serverCtx
-	shutdownMetrics := metrics.InitMetrics(metricsCtx, *baseLogger)
+	m, shutdownMetrics := metrics.InitMetrics(metricsCtx, baseLogger)
 	defer func() {
-		err := shutdownMetrics(metricsCtx)
-		if err != nil {
+		if err := shutdownMetrics(metricsCtx); err != nil {
 			baseLogger.Sugar().Errorf("Failed to shut down metrics: %v", err)
 		}
 	}()
@@ -75,16 +76,23 @@ func main() {
 		baseLogger.Sugar().Fatalf("Failed to connect to database: %v", err)
 	}
 	defer func(db *sqlx.DB) {
-		err := db.Close()
-		if err != nil {
+		if err := db.Close(); err != nil {
 			baseLogger.Sugar().Errorf("Failed to close database connection: %v", err)
 		}
 	}(db)
 
-	srv := server.NewServer(db, cfg)
+	if cfg.AutoMigrate {
+		baseLogger.Info("AUTO_MIGRATE=true: running migrations")
+		if err := database.RunMigrations(db.DB); err != nil {
+			baseLogger.Sugar().Fatalf("Migration failed: %v", err)
+		}
+		baseLogger.Info("Migrations applied successfully")
+	}
+
+	srv := server.NewServer(db, cfg, m)
 	go func() {
 		if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			baseLogger.Fatal("Server error: ", zap.Error(err))
+			baseLogger.Fatal("Server error", zap.Error(err))
 		}
 	}()
 
