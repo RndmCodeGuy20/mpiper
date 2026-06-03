@@ -14,9 +14,9 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/rndmcodeguy20/mpiper/internal/metrics"
 	appErrors "github.com/rndmcodeguy20/mpiper/pkg/errors"
-	"github.com/rndmcodeguy20/mpiper/pkg/utils"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.uber.org/zap"
 )
 
 type AssetType string
@@ -55,7 +55,7 @@ func ToAssetType(fileType string) AssetType {
 }
 
 func ToAssetTypeFromMimeType(mimeType string) AssetType {
-	if len(mimeType) == 0 {
+	if len(mimeType) < 5 {
 		return OtherAsset
 	}
 	switch {
@@ -76,7 +76,6 @@ func ToAssetTypeFromMimeType(mimeType string) AssetType {
 type AssetRepository interface {
 	CreateAsset(ictx context.Context, d uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error
 	CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error
-	MarkAssetUploaded(id uuid.UUID) error
 	MarkAssetUploadedTx(ctx context.Context, tx *sql.Tx, id uuid.UUID) (bool, error)
 	InsertProcessAssetJobTx(ctx context.Context, tx *sql.Tx, assetID uuid.UUID) (*int64, error)
 	GetDB() *sqlx.DB
@@ -84,14 +83,12 @@ type AssetRepository interface {
 
 type assetRepo struct {
 	db     *sqlx.DB
-	logger *utils.Logger
+	logger *zap.Logger
+	m      *metrics.Metrics
 }
 
-func NewAssetRepository(db *sqlx.DB, logger *utils.Logger) AssetRepository {
-	return &assetRepo{
-		db:     db,
-		logger: logger,
-	}
+func NewAssetRepository(db *sqlx.DB, logger *zap.Logger, m *metrics.Metrics) AssetRepository {
+	return &assetRepo{db: db, logger: logger, m: m}
 }
 
 func (r *assetRepo) GetDB() *sqlx.DB {
@@ -121,19 +118,17 @@ func (r *assetRepo) CreateAsset(ctx context.Context, id uuid.UUID, url string, s
 
 	if err != nil {
 		attrs = append(attrs, attribute.String("db.status", "error"))
-		if metrics.DBQueryErrors != nil {
-			metrics.DBQueryErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		if r.m != nil {
+			r.m.DBQueryErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
 		}
 		r.logger.Sugar().Errorf("Failed to create asset: %v", err)
 		return appErrors.NewInternalServerError("Could not insert row", err)
 	}
 
 	attrs = append(attrs, attribute.String("db.status", "success"))
-	if metrics.DBQueryTotal != nil {
-		metrics.DBQueryTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
-	}
-	if metrics.DBQueryDuration != nil {
-		metrics.DBQueryDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
+	if r.m != nil {
+		r.m.DBQueryTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+		r.m.DBQueryDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
 	}
 
 	return nil
@@ -162,35 +157,19 @@ func (r *assetRepo) CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID,
 
 	if err != nil {
 		attrs = append(attrs, attribute.String("db.status", "error"))
-		if metrics.DBQueryErrors != nil {
-			metrics.DBQueryErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
+		if r.m != nil {
+			r.m.DBQueryErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
 		}
 		r.logger.Sugar().Errorf("Failed to create asset in transaction: %v", err)
 		return appErrors.NewInternalServerError("Could not insert row in transaction", err)
 	}
 
 	attrs = append(attrs, attribute.String("db.status", "success"))
-	if metrics.DBQueryTotal != nil {
-		metrics.DBQueryTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
-	}
-	if metrics.DBQueryDuration != nil {
-		metrics.DBQueryDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
+	if r.m != nil {
+		r.m.DBQueryTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+		r.m.DBQueryDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
 	}
 
-	return nil
-}
-
-func (r *assetRepo) MarkAssetUploaded(id uuid.UUID) error {
-	query := `UPDATE assets SET status = $1 WHERE asset_id = $2;`
-	_, err := r.db.Exec(
-		query,
-		StatusUploaded,
-		id,
-	)
-	if err != nil {
-		r.logger.Sugar().Errorf("Failed to mark asset as uploaded: %v", err)
-		return appErrors.NewInternalServerError("Could not update row", err)
-	}
 	return nil
 }
 
@@ -223,7 +202,7 @@ func (r *assetRepo) InsertProcessAssetJobTx(ctx context.Context, tx *sql.Tx, ass
 	var jobID int64
 	query := `INSERT INTO jobs (type, asset_id, status)
 				VALUES ($1, $2, $3)
-				ON CONFLICT (asset_id, type) DO NOTHING
+				ON CONFLICT (asset_id, type) DO UPDATE SET updated_at = NOW()
 				RETURNING job_id;`
 
 	err := tx.QueryRowContext(

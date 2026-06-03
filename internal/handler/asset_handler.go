@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/rndmcodeguy20/mpiper/internal/config"
 	"github.com/rndmcodeguy20/mpiper/internal/metrics"
 	"github.com/rndmcodeguy20/mpiper/internal/models"
 	"github.com/rndmcodeguy20/mpiper/internal/service"
@@ -16,16 +17,26 @@ import (
 	"go.uber.org/zap"
 )
 
-type AssetHandler struct {
-	svc    service.AssetService
-	logger *utils.Logger
+var allowedMIMETypes = map[string]bool{
+	"image/jpeg":      true,
+	"image/png":       true,
+	"image/webp":      true,
+	"video/mp4":       true,
+	"video/quicktime": true,
 }
 
-func NewAssetHandler(svc service.AssetService, logger *utils.Logger) *AssetHandler {
-	return &AssetHandler{
-		svc:    svc,
-		logger: logger,
-	}
+func maxAssetSize() int64 {
+	return config.MustGet().MaxAssetSizeBytes
+}
+
+type AssetHandler struct {
+	svc    service.AssetService
+	logger *zap.Logger
+	m      *metrics.Metrics
+}
+
+func NewAssetHandler(svc service.AssetService, logger *zap.Logger, m *metrics.Metrics) *AssetHandler {
+	return &AssetHandler{svc: svc, logger: logger, m: m}
 }
 
 func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
@@ -38,15 +49,6 @@ func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
 	timeoutCtx, cancelFn := utils.GetTimeoutContext(ctx, 30)
 	defer cancelFn()
 
-	// Record request size
-	//if r.ContentLength > 0 && metrics.HTTPRequestSize != nil {
-	//	attrs := []attribute.KeyValue{
-	//		attribute.String("http.method", r.Method),
-	//		attribute.String("http.route", r.URL.Path),
-	//	}
-	//	metrics.HTTPRequestSize.Record(ctx, r.ContentLength, metric.WithAttributes(attrs...))
-	//}
-
 	span.SetAttributes(
 		attribute.String("http.method", r.Method),
 		attribute.String("http.route", chi.RouteContext(r.Context()).RoutePattern()),
@@ -54,22 +56,21 @@ func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	defer func() {
-		metrics.AssetUploadDuration.Record(ctx, time.Since(start).Seconds())
+		if h.m != nil {
+			h.m.AssetUploadDuration.Record(ctx, time.Since(start).Seconds())
+		}
 	}()
 
-	metrics.AssetUploadTotal.Add(ctx, 1)
+	if h.m != nil {
+		h.m.AssetUploadTotal.Add(ctx, 1)
+	}
 
 	var req models.UploadAssetRequest
-	err := utils.ParseJSON(r.Body, &req)
-	if err != nil {
+	if err := utils.ParseJSON(r.Body, &req); err != nil {
 		h.logger.Error("Failed to parse create asset request", zap.Error(err))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Invalid request payload")
-		utils.RespondJSON(
-			w,
-			map[string]string{"status": "error", "message": "Invalid request payload"},
-			http.StatusBadRequest,
-		)
+		utils.RespondJSON(w, map[string]string{"status": "error", "message": "Invalid request payload"}, http.StatusBadRequest)
 		return
 	}
 
@@ -79,13 +80,20 @@ func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if req.ContentType == "" {
-		h.logger.Error("ContentType is required")
 		span.SetStatus(codes.Error, "ContentType is required")
-		utils.RespondJSON(
-			w,
-			map[string]string{"status": "error", "message": "ContentType is required"},
-			http.StatusBadRequest,
-		)
+		utils.RespondJSON(w, map[string]string{"status": "error", "message": "ContentType is required"}, http.StatusBadRequest)
+		return
+	}
+
+	if !allowedMIMETypes[req.ContentType] {
+		span.SetStatus(codes.Error, "unsupported content type")
+		utils.RespondJSON(w, map[string]string{"status": "error", "message": "unsupported content type"}, http.StatusBadRequest)
+		return
+	}
+
+	if req.Size > maxAssetSize() {
+		span.SetStatus(codes.Error, "file too large")
+		utils.RespondJSON(w, map[string]string{"status": "error", "message": "file exceeds maximum allowed size"}, http.StatusBadRequest)
 		return
 	}
 
@@ -96,41 +104,29 @@ func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := h.svc.CreateAsset(timeoutCtx, req)
-
 	if err != nil {
 		h.logger.Error("Failed to create asset", zap.Error(err))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to create asset")
-		metrics.AssetProcessingFailed.Add(timeoutCtx, 1)
-		utils.RespondJSON(
-			w,
-			map[string]string{"status": "error", "message": "Failed to create asset", "error": err.Error()},
-			http.StatusInternalServerError,
-		)
+		if h.m != nil {
+			h.m.AssetProcessingFailed.Add(timeoutCtx, 1)
+		}
+		utils.RespondJSON(w, map[string]string{"status": "error", "message": "Failed to create asset", "error": err.Error()}, http.StatusInternalServerError)
 		return
 	}
 	if res == nil {
-		h.logger.Error("CreateAsset returned nil response without error")
 		span.SetStatus(codes.Error, "Nil response from CreateAsset")
-		metrics.AssetProcessingFailed.Add(timeoutCtx, 1)
-		utils.RespondJSON(
-			w,
-			map[string]string{"status": "error", "message": "Internal server error: nil response from CreateAsset"},
-			http.StatusInternalServerError,
-		)
+		if h.m != nil {
+			h.m.AssetProcessingFailed.Add(timeoutCtx, 1)
+		}
+		utils.RespondJSON(w, map[string]string{"status": "error", "message": "Internal server error"}, http.StatusInternalServerError)
 		return
 	}
 
 	h.logger.Sugar().Infof("Asset created: %s", res.AssetID)
-
 	span.SetAttributes(attribute.String("asset_id", res.AssetID))
 	span.SetStatus(codes.Ok, "Asset created successfully")
-
-	utils.RespondJSON(
-		w,
-		map[string]interface{}{"status": "success", "data": res},
-		http.StatusOK,
-	)
+	utils.RespondJSON(w, map[string]interface{}{"status": "success", "data": res}, http.StatusOK)
 }
 
 func (h *AssetHandler) MarkAssetUploaded(w http.ResponseWriter, r *http.Request) {
@@ -157,23 +153,15 @@ func (h *AssetHandler) MarkAssetUploaded(w http.ResponseWriter, r *http.Request)
 		utils.RespondJSON(w, map[string]string{"status": "error", "message": "invalid asset id"}, http.StatusBadRequest)
 		return
 	}
-	err = h.svc.MarkAssetUploaded(timeoutCtx, parsedID)
-	if err != nil {
+
+	if err := h.svc.MarkAssetUploaded(timeoutCtx, parsedID); err != nil {
 		h.logger.Sugar().Errorf("Failed to mark asset uploaded: %v", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to mark asset uploaded")
-		utils.RespondJSON(
-			w,
-			map[string]string{"status": "error", "message": "Failed to mark asset uploaded", "error": err.Error()},
-			http.StatusInternalServerError,
-		)
+		utils.RespondJSON(w, map[string]string{"status": "error", "message": "Failed to mark asset uploaded", "error": err.Error()}, http.StatusInternalServerError)
 		return
 	}
 
 	span.SetStatus(codes.Ok, "Asset marked as uploaded")
-	utils.RespondJSON(
-		w,
-		map[string]string{"status": "success", "message": "Asset marked as uploaded"},
-		http.StatusOK,
-	)
+	utils.RespondJSON(w, map[string]string{"status": "success", "message": "Asset marked as uploaded"}, http.StatusOK)
 }

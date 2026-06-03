@@ -2,13 +2,15 @@ import logging
 import signal
 import time
 
-from worker.consumer.config import WorkerConfig
+from urllib.parse import quote_plus
+
+from worker.consumer.config import WorkerConfig, get_config
 from worker.consumer.consumer import Consumer
 from worker.consumer.db import PgPool
+from worker.consumer.migrations import run_migrations
 from worker.storage.base import StorageX
 from worker.storage.gcs import GCSStorage
 from worker.utils import metrics as worker_metrics
-from urllib.parse import quote_plus
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ def main():
     # Initialise configurations, database connections, and consumer
     logger.info("Starting worker consumer...")
 
-    cfg = WorkerConfig.from_env()
+    cfg = get_config()
     storage = get_storage(cfg)
     password = quote_plus(cfg.database.password)
 
@@ -25,6 +27,12 @@ def main():
         f"postgresql://{cfg.database.user}:{password}"
         f"@{cfg.database.host}:{cfg.database.port}/{cfg.database.db_name}"
     )
+
+    if cfg.auto_migrate:
+        logger.info("AUTO_MIGRATE=true: running migrations")
+        run_migrations(dsn, migrations_dir=cfg.migrations_dir)
+        logger.info("Migrations applied successfully")
+
     pg = PgPool(dsn=dsn)
     consumer = Consumer(
         pg_pool=pg, storage=storage, redis_url=cfg.redis.connection_string, cfg=cfg
@@ -64,10 +72,7 @@ if __name__ == "__main__":
 
 
 def get_storage(cfg: WorkerConfig) -> StorageX:
-    if cfg.bucket.provider == "s3":
-        return GCSStorage(cfg.bucket.bucket_name, cfg.bucket.sa_path)
-    else:
-        return GCSStorage(cfg.bucket.bucket_name, cfg.bucket.sa_path)
+    return GCSStorage(cfg.bucket.bucket_name, cfg.bucket.sa_path)
 
 
 if __name__ == "__main__":

@@ -10,13 +10,14 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rndmcodeguy20/mpiper/internal/metrics"
 	appErrors "github.com/rndmcodeguy20/mpiper/pkg/errors"
-	"github.com/rndmcodeguy20/mpiper/pkg/utils"
+	"go.uber.org/zap"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
+
 
 type RedisQueueOptions struct {
 	QueueName         string
@@ -40,11 +41,11 @@ type RedisQueue struct {
 	ctx     context.Context
 	redis   *RedisClient
 	options RedisQueueOptions
-	logger  *utils.Logger
+	logger  *zap.Logger
+	m       *metrics.Metrics
 }
 
-func NewRedisQueue(ctx context.Context, client *RedisClient, options RedisQueueOptions, logger *utils.Logger) *RedisQueue {
-	// validate options
+func NewRedisQueue(ctx context.Context, client *RedisClient, options RedisQueueOptions, logger *zap.Logger, m *metrics.Metrics) *RedisQueue {
 	if options.QueueName == "" {
 		options.QueueName = "media:jobs"
 	}
@@ -67,15 +68,19 @@ func NewRedisQueue(ctx context.Context, client *RedisClient, options RedisQueueO
 		options.PoolSize = 10
 	}
 	if options.MaxStreamLength <= 0 {
-		options.MaxStreamLength = 10_000 // default max stream length
+		options.MaxStreamLength = 10_000
 	}
 
-	return &RedisQueue{
-		ctx:     ctx,
-		redis:   client,
-		options: options,
-		logger:  logger,
+	rq := &RedisQueue{ctx: ctx, redis: client, options: options, logger: logger, m: m}
+
+	if m != nil {
+		streamName := options.QueueName
+		_ = m.RegisterQueueDepthFunc(func(ctx context.Context) (int64, error) {
+			return client.XLen(ctx, streamName)
+		})
 	}
+
+	return rq
 }
 
 func (rq *RedisQueue) Enqueue(ctx context.Context, payload map[string]interface{}) (string, error) {
@@ -138,30 +143,25 @@ func (rq *RedisQueue) Enqueue(ctx context.Context, payload map[string]interface{
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to enqueue message")
 
-		// Record failure metrics
-		if metrics.QueueMessageFailed != nil {
+		if rq.m != nil {
 			attrs := []attribute.KeyValue{
 				attribute.String("queue.name", rq.options.QueueName),
 				attribute.String("error.type", "publish_failed"),
 			}
-			metrics.QueueMessageFailed.Add(ctx, 1, metric.WithAttributes(attrs...))
+			rq.m.QueueMessageFailed.Add(ctx, 1, metric.WithAttributes(attrs...))
 		}
 
 		return "", err
 	}
 
-	// Record success metrics
 	duration := time.Since(start).Seconds()
 	attrs := []attribute.KeyValue{
 		attribute.String("queue.name", rq.options.QueueName),
 	}
 
-	if metrics.QueueMessagePublished != nil {
-		metrics.QueueMessagePublished.Add(ctx, 1, metric.WithAttributes(attrs...))
-	}
-
-	if metrics.QueueProcessingLag != nil {
-		metrics.QueueProcessingLag.Record(ctx, duration, metric.WithAttributes(attrs...))
+	if rq.m != nil {
+		rq.m.QueueMessagePublished.Add(ctx, 1, metric.WithAttributes(attrs...))
+		rq.m.QueueProcessingLag.Record(ctx, duration, metric.WithAttributes(attrs...))
 	}
 
 	span.SetAttributes(attribute.String("message.id", id))

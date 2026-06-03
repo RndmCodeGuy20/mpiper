@@ -13,7 +13,6 @@ import (
 	"github.com/rndmcodeguy20/mpiper/internal/queue"
 	lredis "github.com/rndmcodeguy20/mpiper/internal/queue"
 	"github.com/rndmcodeguy20/mpiper/internal/repository"
-	"github.com/rndmcodeguy20/mpiper/pkg/utils"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils/storagex"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -29,22 +28,23 @@ type AssetService interface {
 
 type assetService struct {
 	assetRepo     repository.AssetRepository
-	logger        *utils.Logger
+	logger        *zap.Logger
 	storageClient storagex.StorageX
 	queue         *queue.RedisQueue
+	m             *metrics.Metrics
 }
 
-func NewAssetService(redisCfg *config.RedisConfig, provider storagex.Provider, assetRepo repository.AssetRepository, logger *utils.Logger) AssetService {
+func NewAssetService(redisCfg *config.RedisConfig, provider storagex.Provider, assetRepo repository.AssetRepository, logger *zap.Logger, m *metrics.Metrics) AssetService {
 	var storageClient storagex.StorageX
 	var err error
 	ctx := context.Background()
 	switch provider {
-	//case storagex.AWSProvider:
-	//	storageClient = storagex.NewAWSStorageX()
 	case storagex.GCPProvider:
-		storageClient, err = storagex.NewGCSStorageFromServiceAccountJSON(ctx, ".secrets/aion-staging-d4d9b9c808ec.json")
-	case storagex.AzureProvider:
-		//storageClient = storagex.NewAzureStorageX()
+		saPath := config.MustGet().Storage.GCS.SAPath
+		if saPath == "" {
+			logger.Sugar().Fatalf("GCS_SA_PATH is not set")
+		}
+		storageClient, err = storagex.NewGCSStorageFromServiceAccountJSON(ctx, saPath, m, logger)
 	default:
 		logger.Sugar().Fatalf("Unsupported storage provider: %v", provider)
 	}
@@ -61,13 +61,14 @@ func NewAssetService(redisCfg *config.RedisConfig, provider storagex.Provider, a
 		MaxRetries:        3,
 		RetryInterval:     2 * time.Second,
 		EnableMetrics:     true,
-	}, logger)
+	}, logger, m)
 
 	return &assetService{
 		assetRepo:     assetRepo,
 		logger:        logger,
 		storageClient: storageClient,
 		queue:         rq,
+		m:             m,
 	}
 }
 
@@ -131,34 +132,27 @@ func (s *assetService) CreateAsset(ctx context.Context, request models.UploadAss
 		spanStorage.RecordError(err)
 
 		// Record failure metric
-		if metrics.AssetUploadTotal != nil {
+		if s.m != nil {
 			attrs := []attribute.KeyValue{
 				attribute.String("status", "error"),
 				attribute.String("error.type", "db_error"),
 			}
-			metrics.AssetUploadTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+			s.m.AssetUploadTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 		}
 
 		return nil, err
 	}
 
-	// Record successful asset creation
 	duration := time.Since(start).Seconds()
 	attrs := []attribute.KeyValue{
 		attribute.String("status", "success"),
 		attribute.String("asset_type", string(repository.ToAssetTypeFromMimeType(request.ContentType))),
 	}
 
-	if metrics.AssetUploadTotal != nil {
-		metrics.AssetUploadTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
-	}
-
-	if metrics.AssetUploadDuration != nil {
-		metrics.AssetUploadDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
-	}
-
-	if metrics.AssetSizeBytes != nil {
-		metrics.AssetSizeBytes.Record(ctx, request.Size, metric.WithAttributes(attrs...))
+	if s.m != nil {
+		s.m.AssetUploadTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+		s.m.AssetUploadDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
+		s.m.AssetSizeBytes.Record(ctx, request.Size, metric.WithAttributes(attrs...))
 	}
 
 	span.SetStatus(codes.Ok, "Asset created successfully")

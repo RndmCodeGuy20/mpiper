@@ -1,10 +1,12 @@
 package queue
 
 import (
+	"context"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/rndmcodeguy20/mpiper/internal/config"
 	"github.com/rndmcodeguy20/mpiper/pkg/errors"
-	"github.com/rndmcodeguy20/mpiper/pkg/utils"
+	"go.uber.org/zap"
 )
 
 type RedisClient struct {
@@ -12,7 +14,7 @@ type RedisClient struct {
 	client *redis.Client
 }
 
-func MustGetRedisClient(cfg *config.RedisConfig, logger *utils.Logger) (*RedisClient, error) {
+func MustGetRedisClient(cfg *config.RedisConfig, logger *zap.Logger) (*RedisClient, error) {
 	var redisAddr string
 	var redisPassword string
 	var redisDB int
@@ -46,4 +48,8 @@ func MustGetRedisClient(cfg *config.RedisConfig, logger *utils.Logger) (*RedisCl
 		cfg:    cfg,
 		client: rdb,
 	}, nil
+}
+
+func (rc *RedisClient) XLen(ctx context.Context, stream string) (int64, error) {
+	return rc.client.XLen(ctx, stream).Result()
 }

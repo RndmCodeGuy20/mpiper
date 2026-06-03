@@ -11,7 +11,6 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/rndmcodeguy20/mpiper/internal/metrics"
 	"github.com/rndmcodeguy20/mpiper/pkg/errors"
-	"github.com/rndmcodeguy20/mpiper/pkg/utils"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -24,31 +23,24 @@ type gcsStorage struct {
 	client         *storage.Client
 	secretAccessID string
 	privateKey     []byte
-	logger         *utils.Logger
+	logger         *zap.Logger
 	provider       string
+	m              *metrics.Metrics
 }
 
-func NewGCSStorage(ctx context.Context, projectID string) (StorageX, error) {
+func NewGCSStorage(ctx context.Context, projectID string, m *metrics.Metrics) (StorageX, error) {
 	client, err := storage.NewClient(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &gcsStorage{
-		client: client,
-	}, nil
+	return &gcsStorage{client: client, m: m}, nil
 }
 
-func NewGCSStorageFromServiceAccountJSON(ctx context.Context, serviceAccountJSONPath string) (StorageX, error) {
+func NewGCSStorageFromServiceAccountJSON(ctx context.Context, serviceAccountJSONPath string, m *metrics.Metrics, l *zap.Logger) (StorageX, error) {
 	client, err := storage.NewClient(ctx, option.WithCredentialsFile(serviceAccountJSONPath))
 	if err != nil {
 		return nil, err
 	}
-	defer func(client *storage.Client) {
-		err := client.Close()
-		if err != nil {
-			utils.NewLogger().Error("Failed to close GCS client", zap.Error(err))
-		}
-	}(client)
 
 	data, err := os.ReadFile(serviceAccountJSONPath)
 	if err != nil {
@@ -74,7 +66,8 @@ func NewGCSStorageFromServiceAccountJSON(ctx context.Context, serviceAccountJSON
 		client:         client,
 		secretAccessID: secretAccessID,
 		privateKey:     privateKey,
-		logger:         utils.NewLogger(),
+		logger:         l,
+		m:              m,
 	}, nil
 }
 
@@ -290,29 +283,22 @@ func (g *gcsStorage) DeleteObject(ctx context.Context, bucket, key string) error
 
 // recordOperationMetrics records metrics for storage operations, including success/failure counts and operation duration.
 func (g *gcsStorage) recordOperationMetrics(ctx context.Context, operation string, success bool, duration time.Duration) {
+	if g.m == nil {
+		return
+	}
 	status := "success"
 	if !success {
 		status = "error"
 	}
-
 	attrs := []attribute.KeyValue{
 		attribute.String("storage.operation", operation),
 		attribute.String("storage.provider", "gcs"),
 		attribute.String("storage.status", status),
 	}
-
 	if success {
-		if metrics.StorageOperationTotal != nil {
-			metrics.StorageOperationTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
-		}
+		g.m.StorageOperationTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 	} else {
-		if metrics.StorageOperationErrors != nil {
-			metrics.StorageOperationErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
-		}
+		g.m.StorageOperationErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
 	}
-
-	if metrics.StorageOperationDuration != nil {
-		metrics.StorageOperationDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
-	}
-
+	g.m.StorageOperationDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
 }
