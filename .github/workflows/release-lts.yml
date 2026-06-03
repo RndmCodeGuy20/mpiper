@@ -246,6 +246,7 @@ jobs:
             }
 
       - name: Send Slack notification - Success
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -329,6 +330,7 @@ jobs:
             }
 
       - name: Send Slack notification - Failure
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           GITHUB_REPOSITORY: ${{ github.repository }}
