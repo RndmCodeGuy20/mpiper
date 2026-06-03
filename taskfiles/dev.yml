@@ -1,0 +1,73 @@
+version: '3'
+
+vars:
+  BUILD_TIME:
+    sh: TZ=Asia/Kolkata date +%Y-%m-%dT%H:%M:%S%z
+
+  GIT_COMMIT:
+    sh: |
+      git rev-parse --short HEAD 2>/dev/null || echo "dev"
+
+  VERSION:
+    sh: toml get --toml-path mpiper.toml version 2>/dev/null || echo "0.0.0"
+
+  AUTHOR:
+    sh: toml get --toml-path mpiper.toml author.name 2>/dev/null || echo "Unknown"
+
+  LDFLAGS: >-
+    -X 'main.Version={{.VERSION}}'
+    -X 'main.BuildTime={{.BUILD_TIME}}'
+    -X 'main.CommitHash={{.GIT_COMMIT}}'
+    -X 'main.Author={{.AUTHOR}}'
+
+tasks:
+  run:
+    desc: Run app
+    cmds:
+      - go run -ldflags="{{.LDFLAGS}} -s -w" {{.MAIN_PATH}}
+
+  watch:
+    desc: Hot reload using air
+    cmds:
+      - air -c .air.toml
+
+  start:
+    desc: Run built binary
+    cmds:
+      - ./{{.BUILD_DIR}}/{{.APP_NAME}}
+
+  install:
+    desc: Install dependencies
+    cmds:
+      - go mod download
+      - go mod tidy
+
+  deps-update:
+    desc: Update dependencies
+    cmds:
+      - go get -u ./...
+      - go mod tidy
+
+  develop:
+    desc: Run the application (development)
+    env:
+      LOG_LEVEL: DEBUG
+      ENV: development
+    cmds:
+      - go run -ldflags="{{.LDFLAGS}} -X 'main.Env=development'" {{.MAIN_PATH}}
+
+  staging:
+    desc: Run the application (staging)
+    env:
+      LOG_LEVEL: INFO
+      ENV: staging
+    cmds:
+      - go run -ldflags="{{.LDFLAGS}}" {{.MAIN_PATH}}
+
+  prod:
+    desc: Run the application (production)
+    env:
+      LOG_LEVEL: WARN
+      ENV: production
+    cmds:
+      - go run -ldflags="{{.LDFLAGS}}" {{.MAIN_PATH}}

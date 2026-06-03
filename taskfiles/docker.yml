@@ -1,0 +1,68 @@
+version: '3'
+
+vars:
+  BUILD_TIME:
+    sh: TZ=Asia/Kolkata date +%Y-%m-%dT%H:%M:%S%z
+
+  GIT_COMMIT:
+    sh: |
+      git rev-parse --short HEAD 2>/dev/null || echo "dev"
+
+  VERSION:
+    sh: toml get --toml-path mpiper.toml version 2>/dev/null || echo "0.0.0"
+
+tasks:
+  build-worker:
+    desc: Build Docker image for worker
+    cmds:
+      - docker build
+        --build-arg ENV=development
+        --build-arg VERSION={{.VERSION}}
+        --build-arg BUILD_TIME={{.BUILD_TIME}}
+        --build-arg COMMIT_HASH={{.GIT_COMMIT}}
+        -t {{.APP_NAME}}-worker:{{.VERSION}}
+        -f deploy/docker/worker.dockerfile .
+
+  run-worker:
+    desc: Run Docker container for worker
+    cmds:
+      - docker run
+        --rm
+        --name {{.APP_NAME}}_worker_dev
+        --env-file .env.local
+        -v .secrets/:/app/.secrets:ro
+        -e DB_HOST=host.docker.internal
+        -e ENV=development
+        -e LOG_LEVEL=DEBUG
+        -e VERSION={{.VERSION}}
+        -e BUILD_TIME={{.BUILD_TIME}}
+        -e COMMIT_HASH={{.GIT_COMMIT}}
+        {{.APP_NAME}}-worker:{{.VERSION}}
+
+  build:
+    desc: Build Docker image
+    cmds:
+      - docker build
+        --build-arg ENV=development
+        --build-arg VERSION={{.VERSION}}
+        --build-arg BUILD_TIME={{.BUILD_TIME}}
+        --build-arg COMMIT_HASH={{.GIT_COMMIT}}
+        --build-arg HOST=0.0.0.0
+        -t {{.APP_NAME}}:{{.VERSION}} .
+
+  run:
+    desc: Run Docker container
+    cmds:
+      - docker run
+        --rm
+        -p 5010:5010
+        --name {{.APP_NAME}}_dev
+        --env-file .env.local
+        -e DB_HOST=host.docker.internal
+        -e ENV=development
+        -e HOST=0.0.0.0
+        -e LOG_LEVEL=DEBUG
+        -e VERSION={{.VERSION}}
+        -e BUILD_TIME={{.BUILD_TIME}}
+        -e COMMIT_HASH={{.GIT_COMMIT}}
+        {{.APP_NAME}}:{{.VERSION}}

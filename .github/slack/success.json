@@ -1,0 +1,129 @@
+{
+    "blocks": [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "🚀 Build Successful — ${GITHUB_REPOSITORY}",
+                "emoji": true
+            }
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": "*Repository:*\n<https://github.com/${GITHUB_REPOSITORY}|${GITHUB_REPOSITORY}>"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*Branch:*\n`${GITHUB_REF_NAME}`"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*Commit:*\n<https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}|${GITHUB_SHA_SHORT}>"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*Triggered by:*\n${GITHUB_ACTOR}"
+                }
+            ]
+        },
+        {
+            "type": "divider"
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*🐳 Container Image Details*"
+            }
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": "*Version Tag:*\n`${SEMVER_TAG}`"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*SHA Tag:*\n`${SHA_TAG}`"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*Image Digest:*\n`${IMAGE_DIGEST}`"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*Environment:*\n`staging`"
+                }
+            ]
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*📦 Package URL:*\n<https://github.com/users/${GITHUB_ACTOR}/packages/container/package/${GITHUB_REPO_NAME}|View Package Registry>"
+            },
+            "accessory": {
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": "Open Package",
+                    "emoji": true
+                },
+                "url": "https://github.com/users/${GITHUB_ACTOR}/packages/container/package/${GITHUB_REPO_NAME}"
+            }
+        },
+        {
+            "type": "divider"
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": "*⏱️ Triggered at:*\n${BUILD_TIMESTAMP}"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*🔄 Run:*\n<https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|#${GITHUB_RUN_NUMBER}>"
+                }
+            ]
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "View Workflow Run",
+                        "emoji": true
+                    },
+                    "url": "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+                    "style": "primary"
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "View Commit",
+                        "emoji": true
+                    },
+                    "url": "https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
+                }
+            ]
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "✅ Build completed successfully at ${BUILD_TIMESTAMP}"
+                }
+            ]
+        }
+    ]
+}

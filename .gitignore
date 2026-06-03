@@ -110,3 +110,7 @@ coverage
 API_DOCUMENTATION.md
 
 .code_graph/
+
+.kimchi/
+
+.codegraph/

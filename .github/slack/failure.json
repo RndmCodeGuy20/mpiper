@@ -1,0 +1,98 @@
+{
+    "blocks": [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "❌ Build Failed — ${GITHUB_REPOSITORY}",
+                "emoji": true
+            }
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": "*Repository:*\n<https://github.com/${GITHUB_REPOSITORY}|${GITHUB_REPOSITORY}>"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*Branch:*\n`${GITHUB_REF_NAME}`"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*Commit:*\n<https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}|${GITHUB_SHA_SHORT}>"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*Triggered by:*\n${GITHUB_ACTOR}"
+                }
+            ]
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "⚠️ *The build failed during the CI/CD pipeline. Please review the logs and fix the issue before retrying.*"
+            }
+        },
+        {
+            "type": "divider"
+        },
+        {
+            "type": "section",
+            "fields": [
+                {
+                    "type": "mrkdwn",
+                    "text": "*⏱️ Failed at:*\n${BUILD_TIMESTAMP}"
+                },
+                {
+                    "type": "mrkdwn",
+                    "text": "*🔄 Run:*\n<https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}|#${GITHUB_RUN_NUMBER}>"
+                }
+            ]
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "View Failed Run",
+                        "emoji": true
+                    },
+                    "url": "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+                    "style": "danger"
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "View Logs",
+                        "emoji": true
+                    },
+                    "url": "https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/logs"
+                },
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "View Commit",
+                        "emoji": true
+                    },
+                    "url": "https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
+                }
+            ]
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "🔴 Build failed at ${BUILD_TIMESTAMP} on branch `${GITHUB_REF_NAME}`"
+                }
+            ]
+        }
+    ]
+}

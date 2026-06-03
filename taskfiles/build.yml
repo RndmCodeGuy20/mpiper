@@ -1,0 +1,87 @@
+version: '3'
+
+vars:
+  BUILD_TIME:
+    sh: TZ=Asia/Kolkata date +%Y-%m-%dT%H:%M:%S%z
+
+  GIT_COMMIT:
+    sh: |
+      git rev-parse --short HEAD 2>/dev/null || echo "dev"
+
+  VERSION:
+    sh: toml get --toml-path mpiper.toml version 2>/dev/null || echo "0.0.0"
+
+  AUTHOR:
+    sh: toml get --toml-path mpiper.toml author.name 2>/dev/null || echo "Unknown"
+
+  LDFLAGS: >-
+    -X 'main.Version={{.VERSION}}'
+    -X 'main.BuildTime={{.BUILD_TIME}}'
+    -X 'main.CommitHash={{.GIT_COMMIT}}'
+    -X 'main.Author={{.AUTHOR}}'
+
+tasks:
+  dev:
+    desc: Build debug binary
+    cmds:
+      - go build -o {{.BUILD_DIR}}/{{.APP_NAME}} {{.MAIN_PATH}}
+
+  prod:
+    desc: Build optimized binary
+    cmds:
+      - go build -ldflags="{{.LDFLAGS}} -s -w" -o {{.BUILD_DIR}}/{{.APP_NAME}} {{.MAIN_PATH}}
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - powershell -Command "if (Test-Path {{.BUILD_DIR}}) { Remove-Item -Recurse -Force {{.BUILD_DIR}} }"
+      - powershell -Command "if (Test-Path coverage.out) { Remove-Item coverage.out }"
+      - powershell -Command "if (Test-Path coverage.html) { Remove-Item coverage.html }"
+      - echo "✅ Cleaned build artifacts"
+
+  run-binary:
+    desc: Run the built binary
+    env:
+      LOG_LEVEL: INFO
+      ENV: production
+    cmds:
+      - ./{{.BUILD_DIR}}/{{.APP_NAME}}
+
+  build-all:
+    desc: Build for all platforms
+    cmds:
+      - task: build-windows
+      - task: build-linux
+      - task: build-mac
+
+  build-windows:
+    desc: Build for Windows
+    env:
+      GOOS: windows
+      GOARCH: amd64
+    cmds:
+      - go build -ldflags="{{.LDFLAGS}}" -o {{.BUILD_DIR}}/{{.APP_NAME}}-windows-amd64.exe {{.MAIN_PATH}}
+
+  build-linux:
+    desc: Build for Linux
+    env:
+      GOOS: linux
+      GOARCH: amd64
+    cmds:
+      - go build -ldflags="{{.LDFLAGS}}" -o {{.BUILD_DIR}}/{{.APP_NAME}}-linux-amd64 {{.MAIN_PATH}}
+
+  build-mac:
+    desc: Build for macOS
+    env:
+      GOOS: darwin
+      GOARCH: amd64
+    cmds:
+      - go build -ldflags="{{.LDFLAGS}}" -o {{.BUILD_DIR}}/{{.APP_NAME}}-darwin-amd64 {{.MAIN_PATH}}
+
+  version:
+    desc: Show version information
+    cmds:
+      - echo "App Name       {{.APP_NAME}}"
+      - echo "Version        {{.VERSION}}"
+      - echo "Build Time     {{.BUILD_TIME}}"
+      - echo "Git Commit     {{.GIT_COMMIT}}"

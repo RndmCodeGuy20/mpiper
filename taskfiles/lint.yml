@@ -1,0 +1,25 @@
+version: '3'
+
+tasks:
+  fmt:
+    cmds:
+      - go fmt ./...
+
+  vet:
+    cmds:
+      - go vet ./...
+
+  install:
+    desc: Install golangci-lint locally
+    cmds:
+      - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+  lint:
+    cmds:
+      - golangci-lint run ./...
+
+  all:
+    cmds:
+      - task: fmt
+      - task: vet
+      - task: lint
