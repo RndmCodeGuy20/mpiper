@@ -37,6 +37,13 @@
             }
         },
         {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*💥 Failure Details:*\n```${FAILURE_REASON}```"
+            }
+        },
+        {
             "type": "divider"
         },
         {

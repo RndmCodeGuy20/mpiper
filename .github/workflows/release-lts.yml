@@ -328,6 +328,28 @@ jobs:
               });
             }
 
+      - name: Fetch failure annotations
+        id: error-log
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const jobs = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+            });
+            const failedJob = jobs.data.jobs.find(j => j.conclusion === 'failure');
+            let errorMsg = 'No error details available';
+            if (failedJob) {
+              const failedSteps = failedJob.steps
+                .filter(s => s.conclusion === 'failure')
+                .map(s => `• ${s.name}`)
+                .join('\n');
+              errorMsg = `Failed job: ${failedJob.name}\n${failedSteps}`;
+            }
+            if (errorMsg.length > 500) errorMsg = errorMsg.substring(0, 497) + '...';
+            core.setOutput('message', errorMsg);
+
       - name: Send Slack notification - Failure
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -339,6 +361,7 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           BUILD_TIMESTAMP: ${{ needs.prepare-metadata.outputs.build-time }}
+          FAILURE_REASON: ${{ steps.error-log.outputs.message }}
         run: |
           PAYLOAD=$(envsubst < .github/slack/failure.json)
           echo "$PAYLOAD" | jq . > /dev/null
