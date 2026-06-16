@@ -34,8 +34,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     -a -installsuffix cgo \
     -o mpiper ./cmd/server/main.go
 
-# Verify the binary was created
-RUN ls -lh /build/mpiper && file /build/mpiper
+# Verify the binary was created (the alpine builder has no `file` util)
+RUN ls -lh /build/mpiper
 
 # Stage 2: Runtime - Minimal distroless image
 FROM gcr.io/distroless/static-debian12:nonroot
