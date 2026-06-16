@@ -35,7 +35,7 @@ from redis.exceptions import ResponseError
 
 from worker.consumer.config import WorkerConfig
 from worker.consumer.db import PgPool
-from worker.processing.processor import process_asset_dispatch
+from worker.processing.processor import RetryableException, process_asset_dispatch
 from worker.storage.base import StorageX
 from worker.utils.logger import get_logger
 
@@ -236,7 +236,12 @@ class Consumer:
                 row = cur.fetchone()
                 attempts_now = row[0] if row else 0
 
-                if attempts_now >= self.cfg.redis.max_retries:
+                # Only RetryableException is worth retrying. Any other exception
+                # is permanent (bad asset type, corrupt file, decode failure) —
+                # fail it immediately instead of burning the whole retry budget.
+                retryable = isinstance(exc, RetryableException)
+
+                if not retryable or attempts_now >= self.cfg.redis.max_retries:
                     cur.execute(
                         "UPDATE jobs SET status = 'failed', last_error = %s, updated_at = now() WHERE job_id = %s",
                         (str(exc), str(job_id)),
