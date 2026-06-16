@@ -190,7 +190,7 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 		},
 		Otel: OtelConfig{
 			Endpoint:          envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317"),
-			TLSInsecure:       strings.ToLower(os.Getenv("OTEL_TLS_INSECURE")) == "true",
+			TLSInsecure:       parseTLSInsecure(os.Getenv("OTEL_TLS_INSECURE")),
 			DeploymentEnv:     envOr("DEPLOYMENT_ENV", env),
 			TraceSamplingRate: traceSamplingRate,
 			ServiceName:       envOr("SERVICE_NAME", "mpiper-api"),
@@ -208,6 +208,12 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 		AutoMigrate:        strings.ToLower(os.Getenv("AUTO_MIGRATE")) == "true",
 		MaxAssetSizeBytes:  maxAssetSize,
 	}, nil
+}
+
+// parseTLSInsecure defaults to plaintext (true); TLS is opt-in via OTEL_TLS_INSECURE=false.
+// The bundled collector speaks plaintext gRPC, so secure-by-default would silently drop all telemetry.
+func parseTLSInsecure(raw string) bool {
+	return strings.ToLower(strings.TrimSpace(raw)) != "false"
 }
 
 func envOr(key, def string) string {
