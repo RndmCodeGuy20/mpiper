@@ -144,10 +144,12 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB, m *metrics.Metrics) *chi.Mux {
 		})
 
 		r.Route("/storage", func(r chi.Router) {
+			r.Use(appMiddleware.AuthMiddleware(logger))
 			r.With(presignRateLimiter()).Post("/presign", assetHandler.CreateAsset)
 		})
 
 		r.Route("/assets", func(r chi.Router) {
+			r.Use(appMiddleware.AuthMiddleware(logger))
 			r.Get("/{assetID}/complete", assetHandler.MarkAssetUploaded)
 		})
 	})
