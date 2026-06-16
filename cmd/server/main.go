@@ -55,18 +55,20 @@ func main() {
 
 	baseLogger.Sugar().Infof("Starting %s server on https://%s:%d in %s mode", "MPiper", cfg.Server.Host, cfg.Server.Port, cfg.Environment)
 
-	tracerCtx := serverCtx
-	shutdownTracer := metrics.InitTracer(tracerCtx, baseLogger)
+	shutdownTracer := metrics.InitTracer(serverCtx, baseLogger)
 	defer func() {
-		if err := shutdownTracer(tracerCtx); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := shutdownTracer(ctx); err != nil {
 			baseLogger.Sugar().Errorf("Failed to shut down tracer: %v", err)
 		}
 	}()
 
-	metricsCtx := serverCtx
-	m, shutdownMetrics := metrics.InitMetrics(metricsCtx, baseLogger)
+	m, shutdownMetrics := metrics.InitMetrics(serverCtx, baseLogger)
 	defer func() {
-		if err := shutdownMetrics(metricsCtx); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := shutdownMetrics(ctx); err != nil {
 			baseLogger.Sugar().Errorf("Failed to shut down metrics: %v", err)
 		}
 	}()
