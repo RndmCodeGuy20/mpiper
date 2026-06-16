@@ -4,6 +4,8 @@ type Provider string
 
 const (
 	GCPProvider   Provider = "gcp"
+	GCSProvider   Provider = "gcs"
+	S3Provider    Provider = "s3"
 	MinIOProvider Provider = "minio"
 )
 

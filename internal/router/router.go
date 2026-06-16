@@ -19,7 +19,6 @@ import (
 	"github.com/rndmcodeguy20/mpiper/internal/service"
 	applogger "github.com/rndmcodeguy20/mpiper/pkg/logger"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils"
-	"github.com/rndmcodeguy20/mpiper/pkg/utils/storagex"
 	"golang.org/x/time/rate"
 )
 
@@ -114,7 +113,7 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB, m *metrics.Metrics) *chi.Mux {
 	r.Use(appMiddleware.SlowRequestMiddleware(logger, 2*time.Second))
 
 	assetRepo := repository.NewAssetRepository(db, logger, m)
-	assetSvc := service.NewAssetService(&cfg.Redis, storagex.GCPProvider, assetRepo, logger, m)
+	assetSvc := service.NewAssetService(&cfg.Redis, assetRepo, logger, m)
 	assetHandler := handler.NewAssetHandler(assetSvc, logger, m)
 
 	// Routes

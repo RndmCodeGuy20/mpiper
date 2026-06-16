@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,25 +31,31 @@ type assetService struct {
 	assetRepo     repository.AssetRepository
 	logger        *zap.Logger
 	storageClient storagex.StorageX
+	bucket        string
 	queue         *queue.RedisQueue
 	m             *metrics.Metrics
 }
 
-func NewAssetService(redisCfg *config.RedisConfig, provider storagex.Provider, assetRepo repository.AssetRepository, logger *zap.Logger, m *metrics.Metrics) AssetService {
-	var storageClient storagex.StorageX
-	var err error
+func NewAssetService(redisCfg *config.RedisConfig, assetRepo repository.AssetRepository, logger *zap.Logger, m *metrics.Metrics) AssetService {
 	ctx := context.Background()
-	switch provider {
-	case storagex.GCPProvider:
-		saPath := config.MustGet().Storage.GCS.SAPath
-		if saPath == "" {
-			logger.Sugar().Fatalf("GCS_SA_PATH is not set")
-		}
-		storageClient, err = storagex.NewGCSStorageFromServiceAccountJSON(ctx, saPath, m, logger)
-	default:
-		logger.Sugar().Fatalf("Unsupported storage provider: %v", provider)
+	storeCfg := config.MustGet().Storage
+
+	// Effective bucket: S3 may override via S3_BUCKET_NAME, otherwise BUCKET_NAME.
+	bucket := storeCfg.Bucket
+	switch storagex.Provider(strings.ToLower(storeCfg.Provider)) {
+	case storagex.S3Provider, storagex.MinIOProvider:
+		bucket = storeCfg.S3.Bucket
 	}
 
+	storageClient, err := storagex.New(ctx, storagex.Config{
+		Provider:          storagex.Provider(storeCfg.Provider),
+		Bucket:            bucket,
+		Region:            storeCfg.S3.Region,
+		Endpoint:          storeCfg.S3.EndpointURL,
+		AccessKeyID:       storeCfg.S3.AccessKeyID,
+		SecretAccessKey:   storeCfg.S3.SecretAccessKey,
+		GCPServiceAccount: storeCfg.GCS.SAPath,
+	}, m, logger)
 	if err != nil {
 		logger.Sugar().Fatalf("Failed to initialize storage client: %v", err)
 	}
@@ -67,6 +74,7 @@ func NewAssetService(redisCfg *config.RedisConfig, provider storagex.Provider, a
 		assetRepo:     assetRepo,
 		logger:        logger,
 		storageClient: storageClient,
+		bucket:        bucket,
 		queue:         rq,
 		m:             m,
 	}
@@ -94,7 +102,7 @@ func (s *assetService) CreateAsset(ctx context.Context, request models.UploadAss
 	// GeneratePresignedURL creates a temporary signed URL for uploading an object to the storage bucket.
 	// It generates a PUT presigned URL valid for 5 minutes that allows clients to upload files
 	// with the specified content type to the "mpiper" bucket at the given object key.
-	signedUrl, err := s.storageClient.GeneratePresignedURL(spanStorageCtx, "mpiper", objectKey, &storagex.PresignedURLOptions{
+	signedUrl, err := s.storageClient.GeneratePresignedURL(spanStorageCtx, s.bucket, objectKey, &storagex.PresignedURLOptions{
 		Method:           "PUT",
 		ContentType:      request.ContentType,
 		ExpiresInSeconds: 60 * 5, // 5 minutes
@@ -112,7 +120,7 @@ func (s *assetService) CreateAsset(ctx context.Context, request models.UploadAss
 
 	spanStorageCtx, spanStorage = tracer.Start(ctx, "StorageClient.PublicURL")
 	spanStorage.SetAttributes(attribute.String("object_key", objectKey))
-	publicUrl, err := s.storageClient.PublicURL(spanStorageCtx, "mpiper", objectKey)
+	publicUrl, err := s.storageClient.PublicURL(spanStorageCtx, s.bucket, objectKey)
 	spanStorage.End()
 
 	if err != nil {
@@ -181,7 +189,7 @@ func (s *assetService) MarkAssetUploaded(ctx context.Context, assetID uuid.UUID)
 
 	ctxStorage, spanStorage := tracer.Start(ctx, "StorageClient.GetObjectAttrs")
 	spanStorage.SetAttributes(attribute.String("object_key", objectKey))
-	_, err := s.storageClient.GetObjectAttrs(ctxStorage, "mpiper", objectKey)
+	_, err := s.storageClient.GetObjectAttrs(ctxStorage, s.bucket, objectKey)
 	spanStorage.End()
 
 	if err != nil {
