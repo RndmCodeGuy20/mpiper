@@ -1,10 +1,17 @@
 # ============================================================================
-# Complete Observability Stack for MPiper
+# MPiper — Observability overlay (opt-in)
+#
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up
+#
 # - Grafana: Visualization and dashboards
 # - Tempo: Distributed tracing backend
 # - Prometheus: Metrics collection and storage
 # - Loki: Log aggregation
 # - OTEL Collector: Centralized telemetry collection
+#
+# `otel-collector` joins the core `mpiper_net` (external) so the api and worker
+# can reach it at `otel-collector:4317`. The remaining observability services
+# stay isolated on `mpiper_obs_net`.
 # ============================================================================
 
 name: mpiper-observability-stack
@@ -18,7 +25,7 @@ services:
     container_name: mpiper-tempo
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
-      - ../../observability/tempo.yml:/etc/tempo.yaml
+      - ./observability/tempo.yml:/etc/tempo.yaml
       - tempo-data:/var/tempo
     ports:
       - "3200:3200"   # Tempo HTTP
@@ -27,7 +34,7 @@ services:
       - "9411:9411"   # Zipkin receiver
       - "14268:14268" # Jaeger ingest
     networks:
-      - mpiper-observability
+      - mpiper_obs_net
     restart: unless-stopped
 
   # ==========================================================================
@@ -41,35 +48,35 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=false
-      
+
       # Default admin credentials (CHANGE IN PRODUCTION!)
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
-      
+
       # Enable explore by default
       - GF_EXPLORE_ENABLED=true
-      
+
       # Server settings
       - GF_SERVER_HTTP_PORT=3000
       - GF_SERVER_DOMAIN=localhost
-      
+
       # Feature toggles
       - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor,traceqlSearch
-      
+
       # Log level
       - GF_LOG_LEVEL=info
-      
+
     volumes:
       # Pre-configured data sources
-      - ../../observability/grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources
       # Pre-configured dashboards
-      - ../../observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards
       # Persistent storage for user preferences
       - grafana-data:/var/lib/grafana
     ports:
       - "3000:3000"
     networks:
-      - mpiper-observability
+      - mpiper_obs_net
     depends_on:
       - tempo
       - prometheus
@@ -96,12 +103,12 @@ services:
       - '--web.console.templates=/usr/share/prometheus/consoles'
       - '--web.enable-lifecycle'
     volumes:
-      - ../../observability/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
     networks:
-      - mpiper-observability
+      - mpiper_obs_net
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
@@ -118,12 +125,12 @@ services:
     container_name: mpiper-loki
     command: -config.file=/etc/loki/loki.yaml
     volumes:
-      - ../../observability/loki.yml:/etc/loki/loki.yaml
+      - ./observability/loki.yml:/etc/loki/loki.yaml
       - loki-data:/loki
     ports:
       - "3100:3100"
     networks:
-      - mpiper-observability
+      - mpiper_obs_net
     restart: unless-stopped
 
   # ==========================================================================
@@ -134,31 +141,33 @@ services:
     container_name: mpiper-promtail
     command: -config.file=/etc/promtail/promtail.yaml
     volumes:
-      - ../../observability/promtail.yml:/etc/promtail/promtail.yaml
+      - ./observability/promtail.yml:/etc/promtail/promtail.yaml
       - /var/log:/var/log:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
-      - mpiper-observability
+      - mpiper_obs_net
     depends_on:
       - loki
     restart: unless-stopped
 
   # ==========================================================================
   # OpenTelemetry Collector - Centralized Telemetry Pipeline
+  # Bridges mpiper_net (reachable by api/worker at otel-collector:4317)
+  # and mpiper_obs_net (forwards to tempo/prometheus/loki).
   # ==========================================================================
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: mpiper-otel-collector
     command: ["--config=/etc/otel-collector.yaml"]
     env_file:
-      - ../../.env.local
+      - .env.local
     environment:
       DEPLOYMENT_ENV: local
       SERVICE_VERSION: dev
       K8S_CLUSTER_NAME: docker-compose
     volumes:
-      - ../../observability/otel-collector.yml:/etc/otel-collector.yaml
+      - ./observability/otel-collector.yml:/etc/otel-collector.yaml
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
       - "4319:4317"   # OTLP gRPC (host:4319 -> container:4317)
@@ -168,7 +177,8 @@ services:
       - "13133:13133" # Health check
       - "55679:55679" # zPages extension
     networks:
-      - mpiper-observability
+      - mpiper_net
+      - mpiper_obs_net
     depends_on:
       - tempo
       - prometheus
@@ -185,9 +195,14 @@ services:
 # NETWORKS
 # ============================================================================
 networks:
-  mpiper-observability:
+  # Joined from docker-compose.yml — the core network the api/worker run on.
+  mpiper_net:
+    external: true
+    name: mpiper_net
+  # Internal observability network — isolated from core services.
+  mpiper_obs_net:
     driver: bridge
-    name: mpiper-observability
+    name: mpiper_obs_net
 
 # ============================================================================
 # VOLUMES
