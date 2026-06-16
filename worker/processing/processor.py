@@ -204,14 +204,12 @@ def process_asset_dispatch(
             raise ValueError(f"Unknown asset type: {typ}")
 
     except Exception as e:
+        # Do not touch assets.status here. The consumer (_handle_job) owns the
+        # asset state transition: it marks the asset failed only after the retry
+        # cap is hit, and ready on success. Writing 'failed' on every exception
+        # — including RetryableException — left the asset stuck failed across
+        # retries even though the job was still pending. See DEV-34.
         logger.error("Failed to process asset %s: %s", asset_id, e, exc_info=True)
-        with pg_pool.get_pg_conn() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE assets SET status = %s, error_reason = %s WHERE asset_id = %s",
-                (AssetStatus.FAILED.value, str(e), asset_id)
-            )
-            conn.commit()
         raise
     finally:
         if local_raw_file and os.path.exists(local_raw_file):
