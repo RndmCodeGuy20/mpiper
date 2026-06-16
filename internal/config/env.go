@@ -61,9 +61,19 @@ type GCSConfig struct {
 	SAPath string
 }
 
+type S3Config struct {
+	Bucket          string
+	Region          string
+	AccessKeyID     string
+	SecretAccessKey string
+	EndpointURL     string // optional — set for MinIO / S3-compatible stores
+}
+
 type StorageConfig struct {
 	Provider string
+	Bucket   string
 	GCS      GCSConfig
+	S3       S3Config
 }
 
 type EnvConfig struct {
@@ -198,8 +208,16 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 		},
 		Storage: StorageConfig{
 			Provider: envOr("BUCKET_PROVIDER", "gcs"),
+			Bucket:   envOr("BUCKET_NAME", "mpiper"),
 			GCS: GCSConfig{
 				SAPath: os.Getenv("GCS_SA_PATH"),
+			},
+			S3: S3Config{
+				Bucket:          envOr("S3_BUCKET_NAME", envOr("BUCKET_NAME", "mpiper")),
+				Region:          os.Getenv("S3_REGION"),
+				AccessKeyID:     os.Getenv("S3_ACCESS_KEY_ID"),
+				SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
+				EndpointURL:     os.Getenv("S3_ENDPOINT_URL"),
 			},
 		},
 		CORSAllowedOrigins: corsOrigins,

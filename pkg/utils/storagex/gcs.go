@@ -148,7 +148,7 @@ func (g *gcsStorage) GetObject(ctx context.Context, bucket, key string) (io.Read
 	return rc, nil
 }
 
-func (g *gcsStorage) GetObjectAttrs(ctx context.Context, bucket, key string) (*storage.ObjectAttrs, error) {
+func (g *gcsStorage) GetObjectAttrs(ctx context.Context, bucket, key string) (*ObjectAttrs, error) {
 	tracer := otel.Tracer("mpiper-api")
 	ctx, span := tracer.Start(ctx, "GCS.GetObjectAttrs")
 	defer span.End()
@@ -171,7 +171,11 @@ func (g *gcsStorage) GetObjectAttrs(ctx context.Context, bucket, key string) (*s
 		attribute.String("object.content_type", attrs.ContentType),
 	)
 	span.SetStatus(codes.Ok, "Object attributes retrieved")
-	return attrs, nil
+	return &ObjectAttrs{
+		Size:        attrs.Size,
+		ContentType: attrs.ContentType,
+		ETag:        attrs.Etag,
+	}, nil
 }
 
 func (g *gcsStorage) Close() error {

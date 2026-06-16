@@ -114,3 +114,7 @@ API_DOCUMENTATION.md
 .kimchi/
 
 .codegraph/
+# local e2e verification (do not commit)
+.env.local
+.secrets/
+docker-compose.override.yml
