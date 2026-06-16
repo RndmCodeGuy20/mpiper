@@ -27,6 +27,7 @@ Notes about external expectations:
 
 from __future__ import annotations
 
+import time
 from typing import Dict
 
 import redis
@@ -84,6 +85,13 @@ class Consumer:
         self.storage = storage
         self.cfg = cfg
 
+        # Periodic recovery state. _last_recovery = 0 makes recovery run on the
+        # first consume() so leftovers from a prior crash are swept at startup.
+        # The interval matches the 2-minute staleness threshold in the recovery
+        # query. See DEV-35.
+        self._last_recovery = 0.0
+        self._recovery_interval = 120.0
+
         # Ensure the consumer group exists. If it already exists Redis raises an
         # error; ignore that specific error.
         try:
@@ -121,6 +129,11 @@ class Consumer:
             True if a message was consumed (even if processing failed), False if
             no messages were available.
         """
+        # Recover stuck jobs on a fixed cadence, independent of load. Doing this
+        # only on the idle path meant recovery never ran under sustained load —
+        # exactly when crashed-mid-job rows are most likely. See DEV-35.
+        self._maybe_recover()
+
         # Read one message for this consumer (blocking short period)
         resp = self.redis.xreadgroup(
             groupname=self.cfg.consumer_group,
@@ -131,8 +144,6 @@ class Consumer:
         )
 
         if not resp:
-            # No messages available; attempt recovery of stuck jobs and return.
-            self._recover_stuck_pending()
             return False
 
         # Response format: [(stream_name, [(msg_id, {field: value}), ...])]
@@ -313,6 +324,17 @@ class Consumer:
 
         # Delegate to _handle_job using the job id we now have.
         self._handle_job(job_id, msg_id)
+
+    def _maybe_recover(self) -> None:
+        """Run stuck-job recovery if the recovery interval has elapsed.
+
+        Time-gated so recovery fires on a fixed cadence regardless of whether
+        the consumer is busy or idle.
+        """
+        now = time.time()
+        if now - self._last_recovery >= self._recovery_interval:
+            self._last_recovery = now
+            self._recover_stuck_pending()
 
     def _recover_stuck_pending(self) -> None:
         """Requeue stale pending/in_progress jobs back onto the stream.
