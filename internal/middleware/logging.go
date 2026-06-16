@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"math/rand/v2"
 	"net/http"
 	"time"
 
@@ -82,7 +83,9 @@ func randomString(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, length)
 	for i := range b {
-		b[i] = charset[time.Now().UnixNano()%int64(len(charset))]
+		// math/rand/v2 is concurrency-safe and unbiased; a log-correlation ID
+		// needs neither crypto strength nor per-call seeding.
+		b[i] = charset[rand.IntN(len(charset))]
 	}
 	return string(b)
 }

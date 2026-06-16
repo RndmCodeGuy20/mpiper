@@ -9,6 +9,7 @@ import (
 	"github.com/rndmcodeguy20/mpiper/internal/config"
 	"github.com/rndmcodeguy20/mpiper/internal/metrics"
 	"github.com/rndmcodeguy20/mpiper/internal/models"
+	"github.com/rndmcodeguy20/mpiper/internal/repository"
 	"github.com/rndmcodeguy20/mpiper/internal/service"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils"
 	"go.opentelemetry.io/otel"
@@ -16,14 +17,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 )
-
-var allowedMIMETypes = map[string]bool{
-	"image/jpeg":      true,
-	"image/png":       true,
-	"image/webp":      true,
-	"video/mp4":       true,
-	"video/quicktime": true,
-}
 
 func maxAssetSize() int64 {
 	return config.MustGet().MaxAssetSizeBytes
@@ -85,7 +78,7 @@ func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !allowedMIMETypes[req.ContentType] {
+	if !repository.IsSupportedMIMEType(req.ContentType) {
 		span.SetStatus(codes.Error, "unsupported content type")
 		utils.RespondJSON(w, map[string]string{"status": "error", "message": "unsupported content type"}, http.StatusBadRequest)
 		return
