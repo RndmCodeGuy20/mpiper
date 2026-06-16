@@ -93,6 +93,11 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB, m *metrics.Metrics) *chi.Mux {
 	// Middleware
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
+	// Recovery must be the outermost app-level middleware so panics in any
+	// inner middleware (logger, cors, tracing, …) are caught and turned into a
+	// 500 rather than crashing the process. It takes the base logger directly,
+	// so it does not depend on LoggerMiddleware running first.
+	r.Use(appMiddleware.RecoveryMiddleware(logger))
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -105,7 +110,6 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB, m *metrics.Metrics) *chi.Mux {
 	r.Use(middleware.Timeout(MiddlewareTimeout))
 	r.Use(appMiddleware.TracingMiddleware)
 	r.Use(appMiddleware.MetricsMiddleware(m))
-	r.Use(appMiddleware.RecoveryMiddleware(logger))
 	r.Use(middleware.Compress(5))
 	r.Use(appMiddleware.SlowRequestMiddleware(logger, 2*time.Second))
 

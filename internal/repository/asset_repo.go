@@ -54,6 +54,23 @@ func ToAssetType(fileType string) AssetType {
 	}
 }
 
+// SupportedMIMETypes is the single source of truth for which content types the
+// pipeline accepts for upload and processing, mapped to their asset category.
+// The handler gates uploads against this set; do not maintain a second list.
+var SupportedMIMETypes = map[string]AssetType{
+	"image/jpeg":      ImageAsset,
+	"image/png":       ImageAsset,
+	"image/webp":      ImageAsset,
+	"video/mp4":       VideoAsset,
+	"video/quicktime": VideoAsset,
+}
+
+// IsSupportedMIMEType reports whether the pipeline accepts the given content type.
+func IsSupportedMIMEType(mimeType string) bool {
+	_, ok := SupportedMIMETypes[mimeType]
+	return ok
+}
+
 func ToAssetTypeFromMimeType(mimeType string) AssetType {
 	if len(mimeType) < 5 {
 		return OtherAsset
