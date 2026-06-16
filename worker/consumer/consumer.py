@@ -93,6 +93,15 @@ class Consumer:
         except ResponseError as exc:
             logger.debug("consumer group exists or cannot be created: %s", exc)
 
+        # Write a health sentinel once the consumer group is initialised. The
+        # container healthcheck (test -f /tmp/worker_healthy) reads this file.
+        # Reaching this point means Redis is connected and the group exists.
+        try:
+            with open("/tmp/worker_healthy", "w") as fh:
+                fh.write("ok")
+        except OSError as exc:
+            logger.warning("could not write health sentinel: %s", exc)
+
     def consume(self, consumer_name: str) -> bool:
         """Poll the stream and process a single message.
 
