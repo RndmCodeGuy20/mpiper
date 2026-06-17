@@ -60,7 +60,7 @@ def ensure_variant_exists(
     # CORRECT: Storage key uses variant_hash, not content_hash in path
     # This way, identical variants from different content share the same file
     key = f"media/variants/{variant_hash[:2]}/{variant_hash}.{ext}"
-    url = f"https://storage.googleapis.com/{cfg.bucket.bucket_name}/{key}"
+    url = storage.public_url(key)
 
     with pg_pool.get_pg_conn() as conn:
         cur = conn.cursor()

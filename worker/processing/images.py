@@ -94,7 +94,7 @@ def process_image_file(
 
             variant_hash = compute_variant_hash(content_hash, params)
             key = f"media/processed/{content_hash}/{variant_hash}.{v['format']}"
-            url = f"https://storage.googleapis.com/{cfg.bucket.bucket_name}/{key}"
+            url = storage.public_url(key)
 
             with pg_pool.get_pg_conn() as conn:
                 cur = conn.cursor()

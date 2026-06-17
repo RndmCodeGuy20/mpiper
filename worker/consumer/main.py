@@ -4,12 +4,11 @@ import time
 
 from urllib.parse import quote_plus
 
-from worker.consumer.config import WorkerConfig, get_config
+from worker.consumer.config import get_config
 from worker.consumer.consumer import Consumer
 from worker.consumer.db import PgPool
 from worker.consumer.migrations import run_migrations
-from worker.storage.base import StorageX
-from worker.storage.gcs import GCSStorage
+from worker.storage import get_storage
 from worker.utils import metrics as worker_metrics
 
 logger = logging.getLogger(__name__)
@@ -65,14 +64,6 @@ def main():
     
     # Shutdown metrics on exit
     worker_metrics.shutdown_metrics()
-
-
-if __name__ == "__main__":
-    main()
-
-
-def get_storage(cfg: WorkerConfig) -> StorageX:
-    return GCSStorage(cfg.bucket.bucket_name, cfg.bucket.sa_path)
 
 
 if __name__ == "__main__":

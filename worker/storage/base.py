@@ -39,3 +39,8 @@ class StorageX(ABC):
     def exists(self, key: str) -> bool:
         """Check if a key exists in storage."""
         pass
+
+    @abstractmethod
+    def public_url(self, key: str) -> str:
+        """Return the public (unsigned) URL for an object key."""
+        pass

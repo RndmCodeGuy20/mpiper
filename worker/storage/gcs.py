@@ -17,6 +17,7 @@ class GCSStorage(StorageX):
     def __init__(self, bucket_name: str, sa_path: str):
         self.client = _create_gcs_client(sa_path)
         self.bucket = self.client.bucket(bucket_name)
+        self.bucket_name = bucket_name
 
     def upload_bytes(
         self, key: str, data: bytes, content_type: Optional[Any] = None
@@ -47,3 +48,6 @@ class GCSStorage(StorageX):
     def exists(self, key: str) -> bool:
         blob = self.bucket.blob(key)
         return blob.exists()
+
+    def public_url(self, key: str) -> str:
+        return f"https://storage.googleapis.com/{self.bucket_name}/{key}"
