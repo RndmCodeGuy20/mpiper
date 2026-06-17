@@ -76,14 +76,18 @@ class BucketConfig:
 
     @staticmethod
     def from_env() -> "BucketConfig":
+        # S3_* names mirror the Go server (internal/config/env.go); they take
+        # precedence over the generic BUCKET_* names so a single .env drives
+        # both services. BUCKET_* remains the fallback / GCS default.
+        bucket_name = os.getenv("S3_BUCKET_NAME") or os.getenv("BUCKET_NAME", "media-bucket")
         return BucketConfig(
             provider=os.getenv("BUCKET_PROVIDER", "gcs"),
-            bucket_name=os.getenv("BUCKET_NAME", "media-bucket"),
-            region=os.getenv("BUCKET_REGION", "us-east-1"),
-            access_key=os.getenv("BUCKET_ACCESS_KEY", ""),
-            secret_key=os.getenv("BUCKET_SECRET_KEY", ""),
-            endpoint_url=os.getenv("BUCKET_ENDPOINT_URL"),
-            sa_path=os.getenv("BUCKET_SA_PATH"),
+            bucket_name=bucket_name,
+            region=os.getenv("S3_REGION") or os.getenv("BUCKET_REGION", "us-east-1"),
+            access_key=os.getenv("S3_ACCESS_KEY_ID") or os.getenv("BUCKET_ACCESS_KEY", ""),
+            secret_key=os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("BUCKET_SECRET_KEY", ""),
+            endpoint_url=os.getenv("S3_ENDPOINT_URL") or os.getenv("BUCKET_ENDPOINT_URL"),
+            sa_path=os.getenv("GCS_SA_PATH") or os.getenv("BUCKET_SA_PATH"),
         )
 
 
