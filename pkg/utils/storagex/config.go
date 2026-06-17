@@ -3,9 +3,9 @@ package storagex
 type Provider string
 
 const (
-	AWSProvider   Provider = "aws"
 	GCPProvider   Provider = "gcp"
-	AzureProvider Provider = "azure"
+	GCSProvider   Provider = "gcs"
+	S3Provider    Provider = "s3"
 	MinIOProvider Provider = "minio"
 )
 
@@ -20,16 +20,8 @@ type Config struct {
 	SecretAccessKey string
 	SessionToken    string // Optional, for temporary credentials
 
-	// AWS specific settings
-	AWSUseIAMRole bool // If true, use IAM Role for authentication
-
 	// GCP specific settings
 	GCPProjectID      string
 	GCPServiceAccount string
 	GCPPrivateKeyPath string
-
-	// Azure specific settings
-	AzureAccountName string
-	AzureAccountKey  string
-	AzureContainer   string
 }

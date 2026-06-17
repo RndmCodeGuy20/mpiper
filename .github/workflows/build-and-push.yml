@@ -1,0 +1,373 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - staging
+
+permissions:
+  contents: write
+  deployments: write
+  packages: write
+  pull-requests: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image-digest: ${{ steps.build-and-push.outputs.digest }}
+      sha-tag: ${{ steps.vars.outputs.sha_tag }}
+      semver-tag: ${{ steps.vars.outputs.semver_tag }}
+      sha-only: ${{ steps.vars.outputs.sha_only }}
+      deployment-id: ${{ steps.create-deployment.outputs.deployment_id }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for cross-platform builds if needed)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from repo metadata
+        id: get_version
+        run: |
+          VERSION="$(tr -d '[:space:]' < .version 2>/dev/null || true)"
+          if [ -z "$VERSION" ]; then
+            VERSION="0.1.0"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Define image tags
+        id: vars
+        run: |
+          SHORT_SHA=${GITHUB_SHA::7}
+          VERSION=${{ steps.get_version.outputs.version }}
+          echo "sha_tag=${VERSION}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "semver_tag=${VERSION}" >> $GITHUB_OUTPUT
+          echo "sha_only=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "env_tag=staging" >> $GITHUB_OUTPUT
+
+      - name: Set lowercase repository name
+        id: repo
+        run: echo "repository=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Extract build info
+        id: build_info
+        run: |
+          echo "build_date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+          echo "commit_sha=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          echo "commit_ref=${GITHUB_REF}" >> $GITHUB_OUTPUT
+          echo "build_user=${GITHUB_ACTOR}" >> $GITHUB_OUTPUT
+          echo "build_repo=${GITHUB_REPOSITORY}" >> $GITHUB_OUTPUT
+          echo "build_run_id=${GITHUB_RUN_ID}" >> $GITHUB_OUTPUT
+          echo "build_run_number=${GITHUB_RUN_NUMBER}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Deployment
+        uses: actions/github-script@v6
+        id: create-deployment
+        with:
+          script: |
+            const deployment = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: 'staging',
+              auto_merge: false,
+              required_contexts: [],
+              description: 'Building & pushing Docker image to staging'
+            });
+            core.setOutput('deployment_id', deployment.data.id);
+            core.info(`Created deployment ID: ${deployment.data.id}`);
+
+      - name: Build and push Docker image
+        id: build-and-push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/docker/mpiper.dockerfile
+          push: true
+          build-args: |
+            ENV=staging
+            COMMIT_HASH=${{ steps.build_info.outputs.commit_sha }}
+            BUILD_TIME=${{ steps.build_info.outputs.build_date }}
+            VERSION=${{ steps.get_version.outputs.version }}
+            AUTHOR=${{ steps.build_info.outputs.build_user }}
+          tags: |
+            ghcr.io/${{ steps.repo.outputs.repository }}:${{ steps.vars.outputs.semver_tag }}
+            ghcr.io/${{ steps.repo.outputs.repository }}:${{ steps.vars.outputs.sha_tag }}
+            ghcr.io/${{ steps.repo.outputs.repository }}:${{ steps.vars.outputs.sha_only }}
+            ghcr.io/${{ steps.repo.outputs.repository }}:${{ steps.vars.outputs.env_tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.vars.outputs.semver_tag }}
+
+      - name: Save image tags as artifact
+        run: |
+          echo "${{ steps.vars.outputs.sha_tag }}" > image_tag.txt
+          echo "${{ steps.vars.outputs.semver_tag }}" >> image_tag.txt
+          echo "${{ steps.vars.outputs.sha_only }}" >> image_tag.txt
+          echo "${{ steps.vars.outputs.env_tag }}" >> image_tag.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-tags
+          path: image_tag.txt
+
+      - name: Create Git tag
+        uses: actions/github-script@v6
+        continue-on-error: true
+        with:
+          script: |
+            const tag = '${{ steps.vars.outputs.sha_tag }}';
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/tags/${tag}`,
+              sha: context.sha
+            });
+            core.info(`Created git tag: ${tag}`);
+
+      - name: Write Job Summary
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const digest  = '${{ steps.build-and-push.outputs.digest }}';
+            const repo    = 'ghcr.io/${{ steps.repo.outputs.repository }}';
+            const runUrl  = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            await core.summary
+              .addHeading('🐳 Docker Build Summary')
+              .addTable([
+                [{data: 'Property', header: true}, {data: 'Value', header: true}],
+                ['Repository',   '${{ github.repository }}'],
+                ['Branch',       '${{ github.ref_name }}'],
+                ['Commit',       '${{ github.sha }}'],
+                ['Triggered by', '${{ github.actor }}'],
+                ['Version Tag',  '${{ steps.vars.outputs.semver_tag }}'],
+                ['SHA Tag',      '${{ steps.vars.outputs.sha_tag }}'],
+                ['Env Tag',      'staging'],
+                ['Digest',       digest],
+              ])
+              .addHeading('📦 Image Tags', 3)
+              .addList([
+                `${repo}:${{ steps.vars.outputs.semver_tag }}`,
+                `${repo}:${{ steps.vars.outputs.sha_tag }}`,
+                `${repo}:${{ steps.vars.outputs.sha_only }}`,
+                `${repo}:staging`,
+              ])
+              .addLink('🔗 View Workflow Run', runUrl)
+              .write();
+
+  notify-success:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Slack tooling
+        run: sudo apt-get update && sudo apt-get install -y gettext-base jq
+
+      - name: Download image tags
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-tags
+
+      - name: Read image tags
+        id: read-tags
+        run: |
+          TAGS=$(cat image_tag.txt | sed 's/^/• `/' | sed 's/$/`/' | tr '\n' ' ')
+          echo "formatted-tags=${TAGS}" >> $GITHUB_OUTPUT
+
+      - name: Update Deployment Status → success
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ needs.build-and-push.outputs.deployment-id }},
+              state: 'success',
+              environment_url: 'https://staging.yourapp.com',
+              description: 'Image pushed: ${{ needs.build-and-push.outputs.sha-tag }}'
+            });
+
+      - name: Comment on PR with build info
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const digest  = '${{ needs.build-and-push.outputs.image-digest }}';
+            const shaTag  = '${{ needs.build-and-push.outputs.sha-tag }}';
+            const runUrl  = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+            const pkgUrl  = `https://github.com/users/${{ github.actor }}/packages/container/package/${{ github.event.repository.name }}`;
+
+            const body = [
+              '## 🚀 Staging Build Successful',
+              '',
+              '| Property | Value |',
+              '|---|---|',
+              `| **Branch** | \`${{ github.ref_name }}\` |`,
+              `| **Commit** | \`${{ github.sha }}\` |`,
+              `| **Version Tag** | \`${{ needs.build-and-push.outputs.semver-tag }}\` |`,
+              `| **SHA Tag** | \`${shaTag}\` |`,
+              `| **Digest** | \`${digest}\` |`,
+              '',
+              `📦 [View Package Registry](${pkgUrl})`,
+              `🔄 [View Workflow Run #${{ github.run_number }}](${runUrl})`,
+            ].join('\n');
+
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.repo.owner}:${{ github.ref_name }}`
+            });
+
+            if (prs.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prs.data[0].number,
+                body
+              });
+              core.info(`Commented on PR #${prs.data[0].number}`);
+            } else {
+              core.info('No open PR found — skipping PR comment.');
+            }
+
+      - name: Send Slack notification - Success
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_SHA_SHORT: ${{ needs.build-and-push.outputs.sha-only }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_REPO_NAME: ${{ github.event.repository.name }}
+          SEMVER_TAG: ${{ needs.build-and-push.outputs.semver-tag }}
+          SHA_TAG: ${{ needs.build-and-push.outputs.sha-tag }}
+          IMAGE_DIGEST: ${{ needs.build-and-push.outputs.image-digest }}
+          BUILD_TIMESTAMP: ${{ github.event.head_commit.timestamp }}
+        run: |
+          PAYLOAD=$(envsubst < .github/slack/success.json)
+          echo "$PAYLOAD" | jq . > /dev/null
+          curl -f -X POST \
+            -H 'Content-type: application/json' \
+            --data "$PAYLOAD" \
+            "$SLACK_WEBHOOK_URL"
+
+  notify-failure:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: failure()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Slack tooling
+        run: sudo apt-get update && sudo apt-get install -y gettext-base jq
+
+      - name: Update Deployment Status → failure
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: ${{ needs.build-and-push.outputs.deployment-id }},
+              state: 'failure',
+              description: 'Docker build or push failed'
+            });
+
+      - name: Comment failure on PR
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            const body = [
+              '## ❌ Staging Build Failed',
+              '',
+              '| Property | Value |',
+              '|---|---|',
+              `| **Branch** | \`${{ github.ref_name }}\` |`,
+              `| **Commit** | \`${{ github.sha }}\` |`,
+              `| **Triggered by** | ${{ github.actor }} |`,
+              '',
+              `🔴 [View Failed Run #${{ github.run_number }}](${runUrl})`,
+            ].join('\n');
+
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              head: `${context.repo.owner}:${{ github.ref_name }}`
+            });
+
+            if (prs.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prs.data[0].number,
+                body
+              });
+            }
+
+      - name: Fetch failure annotations
+        id: error-log
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const jobs = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+            });
+            const failedJob = jobs.data.jobs.find(j => j.conclusion === 'failure');
+            let errorMsg = 'No error details available';
+            if (failedJob) {
+              const failedSteps = failedJob.steps
+                .filter(s => s.conclusion === 'failure')
+                .map(s => `• ${s.name}`)
+                .join('\n');
+              errorMsg = `Failed job: ${failedJob.name}\n${failedSteps}`;
+            }
+            // Truncate to 500 chars for Slack block limits
+            if (errorMsg.length > 500) errorMsg = errorMsg.substring(0, 497) + '...';
+            core.setOutput('message', errorMsg);
+
+      - name: Send Slack notification - Failure
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_SHA_SHORT: ${{ needs.build-and-push.outputs.sha-only }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          BUILD_TIMESTAMP: ${{ github.event.head_commit.timestamp }}
+          FAILURE_REASON: ${{ steps.error-log.outputs.message }}
+        run: |
+          PAYLOAD=$(envsubst < .github/slack/failure.json)
+          echo "$PAYLOAD" | jq . > /dev/null
+          curl -f -X POST \
+            -H 'Content-type: application/json' \
+            --data "$PAYLOAD" \
+            "$SLACK_WEBHOOK_URL"

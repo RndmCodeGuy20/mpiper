@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,7 +14,6 @@ import (
 	"github.com/rndmcodeguy20/mpiper/internal/queue"
 	lredis "github.com/rndmcodeguy20/mpiper/internal/queue"
 	"github.com/rndmcodeguy20/mpiper/internal/repository"
-	"github.com/rndmcodeguy20/mpiper/pkg/utils"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils/storagex"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -29,26 +29,33 @@ type AssetService interface {
 
 type assetService struct {
 	assetRepo     repository.AssetRepository
-	logger        *utils.Logger
+	logger        *zap.Logger
 	storageClient storagex.StorageX
+	bucket        string
 	queue         *queue.RedisQueue
+	m             *metrics.Metrics
 }
 
-func NewAssetService(redisCfg *config.RedisConfig, provider storagex.Provider, assetRepo repository.AssetRepository, logger *utils.Logger) AssetService {
-	var storageClient storagex.StorageX
-	var err error
+func NewAssetService(redisCfg *config.RedisConfig, assetRepo repository.AssetRepository, logger *zap.Logger, m *metrics.Metrics) AssetService {
 	ctx := context.Background()
-	switch provider {
-	//case storagex.AWSProvider:
-	//	storageClient = storagex.NewAWSStorageX()
-	case storagex.GCPProvider:
-		storageClient, err = storagex.NewGCSStorageFromServiceAccountJSON(ctx, ".secrets/aion-staging-d4d9b9c808ec.json")
-	case storagex.AzureProvider:
-		//storageClient = storagex.NewAzureStorageX()
-	default:
-		logger.Sugar().Fatalf("Unsupported storage provider: %v", provider)
+	storeCfg := config.MustGet().Storage
+
+	// Effective bucket: S3 may override via S3_BUCKET_NAME, otherwise BUCKET_NAME.
+	bucket := storeCfg.Bucket
+	switch storagex.Provider(strings.ToLower(storeCfg.Provider)) {
+	case storagex.S3Provider, storagex.MinIOProvider:
+		bucket = storeCfg.S3.Bucket
 	}
 
+	storageClient, err := storagex.New(ctx, storagex.Config{
+		Provider:          storagex.Provider(storeCfg.Provider),
+		Bucket:            bucket,
+		Region:            storeCfg.S3.Region,
+		Endpoint:          storeCfg.S3.EndpointURL,
+		AccessKeyID:       storeCfg.S3.AccessKeyID,
+		SecretAccessKey:   storeCfg.S3.SecretAccessKey,
+		GCPServiceAccount: storeCfg.GCS.SAPath,
+	}, m, logger)
 	if err != nil {
 		logger.Sugar().Fatalf("Failed to initialize storage client: %v", err)
 	}
@@ -61,13 +68,15 @@ func NewAssetService(redisCfg *config.RedisConfig, provider storagex.Provider, a
 		MaxRetries:        3,
 		RetryInterval:     2 * time.Second,
 		EnableMetrics:     true,
-	}, logger)
+	}, logger, m)
 
 	return &assetService{
 		assetRepo:     assetRepo,
 		logger:        logger,
 		storageClient: storageClient,
+		bucket:        bucket,
 		queue:         rq,
+		m:             m,
 	}
 }
 
@@ -93,7 +102,7 @@ func (s *assetService) CreateAsset(ctx context.Context, request models.UploadAss
 	// GeneratePresignedURL creates a temporary signed URL for uploading an object to the storage bucket.
 	// It generates a PUT presigned URL valid for 5 minutes that allows clients to upload files
 	// with the specified content type to the "mpiper" bucket at the given object key.
-	signedUrl, err := s.storageClient.GeneratePresignedURL(spanStorageCtx, "mpiper", objectKey, &storagex.PresignedURLOptions{
+	signedUrl, err := s.storageClient.GeneratePresignedURL(spanStorageCtx, s.bucket, objectKey, &storagex.PresignedURLOptions{
 		Method:           "PUT",
 		ContentType:      request.ContentType,
 		ExpiresInSeconds: 60 * 5, // 5 minutes
@@ -111,7 +120,7 @@ func (s *assetService) CreateAsset(ctx context.Context, request models.UploadAss
 
 	spanStorageCtx, spanStorage = tracer.Start(ctx, "StorageClient.PublicURL")
 	spanStorage.SetAttributes(attribute.String("object_key", objectKey))
-	publicUrl, err := s.storageClient.PublicURL(spanStorageCtx, "mpiper", objectKey)
+	publicUrl, err := s.storageClient.PublicURL(spanStorageCtx, s.bucket, objectKey)
 	spanStorage.End()
 
 	if err != nil {
@@ -131,34 +140,27 @@ func (s *assetService) CreateAsset(ctx context.Context, request models.UploadAss
 		spanStorage.RecordError(err)
 
 		// Record failure metric
-		if metrics.AssetUploadTotal != nil {
+		if s.m != nil {
 			attrs := []attribute.KeyValue{
 				attribute.String("status", "error"),
 				attribute.String("error.type", "db_error"),
 			}
-			metrics.AssetUploadTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+			s.m.AssetUploadTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 		}
 
 		return nil, err
 	}
 
-	// Record successful asset creation
 	duration := time.Since(start).Seconds()
 	attrs := []attribute.KeyValue{
 		attribute.String("status", "success"),
 		attribute.String("asset_type", string(repository.ToAssetTypeFromMimeType(request.ContentType))),
 	}
 
-	if metrics.AssetUploadTotal != nil {
-		metrics.AssetUploadTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
-	}
-
-	if metrics.AssetUploadDuration != nil {
-		metrics.AssetUploadDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
-	}
-
-	if metrics.AssetSizeBytes != nil {
-		metrics.AssetSizeBytes.Record(ctx, request.Size, metric.WithAttributes(attrs...))
+	if s.m != nil {
+		s.m.AssetUploadTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+		s.m.AssetUploadDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
+		s.m.AssetSizeBytes.Record(ctx, request.Size, metric.WithAttributes(attrs...))
 	}
 
 	span.SetStatus(codes.Ok, "Asset created successfully")
@@ -187,7 +189,7 @@ func (s *assetService) MarkAssetUploaded(ctx context.Context, assetID uuid.UUID)
 
 	ctxStorage, spanStorage := tracer.Start(ctx, "StorageClient.GetObjectAttrs")
 	spanStorage.SetAttributes(attribute.String("object_key", objectKey))
-	_, err := s.storageClient.GetObjectAttrs(ctxStorage, "mpiper", objectKey)
+	_, err := s.storageClient.GetObjectAttrs(ctxStorage, s.bucket, objectKey)
 	spanStorage.End()
 
 	if err != nil {

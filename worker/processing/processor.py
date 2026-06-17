@@ -156,26 +156,17 @@ def process_asset_dispatch(
         logger.info("Asset %s already in final state: %s", asset_id, status)
         return
 
-    # 3. Check for deduplication BEFORE expensive processing
-    if content_hash:
-        dedup_result = check_for_duplicate(content_hash, asset_id, pg_pool)
-
-        if dedup_result == DedupResult.DUPLICATE_READY:
-            logger.info("Asset %s deduplicated successfully", asset_id)
-            return
-        elif dedup_result == DedupResult.DUPLICATE_PENDING:
-            raise RetryableException(
-                f"Canonical asset for {asset_id} not ready yet"
-            )
-
-    # 4. No duplicate found, proceed with processing
+    # 3. Proceed with processing
+    local_raw_file = None
     try:
         # Mark as processing
         with pg_pool.get_pg_conn() as conn:
-            conn.execute(
+            cur = conn.cursor()
+            cur.execute(
                 "UPDATE assets SET status = %s WHERE asset_id = %s",
                 (AssetStatus.PROCESSING.value, asset_id)
             )
+            conn.commit()
 
         # Download raw file
         raw_key = f"media/raw/{asset_id}"
@@ -187,6 +178,18 @@ def process_asset_dispatch(
         storage.download_to_file(raw_key, local_raw_file)
 
         content_hash = compute_file_hash(local_raw_file)
+
+        # Check for duplicate using the actual downloaded file's hash
+        if content_hash:
+            dedup_result = check_for_duplicate(content_hash, asset_id, pg_pool)
+
+            if dedup_result == DedupResult.DUPLICATE_READY:
+                logger.info("Asset %s deduplicated successfully", asset_id)
+                return
+            elif dedup_result == DedupResult.DUPLICATE_PENDING:
+                raise RetryableException(
+                    f"Canonical asset for {asset_id} not ready yet"
+                )
 
         # Process based on type
         if typ == "image":
@@ -201,13 +204,19 @@ def process_asset_dispatch(
             raise ValueError(f"Unknown asset type: {typ}")
 
     except Exception as e:
+        # Do not touch assets.status here. The consumer (_handle_job) owns the
+        # asset state transition: it marks the asset failed only after the retry
+        # cap is hit, and ready on success. Writing 'failed' on every exception
+        # — including RetryableException — left the asset stuck failed across
+        # retries even though the job was still pending. See DEV-34.
         logger.error("Failed to process asset %s: %s", asset_id, e, exc_info=True)
-        with pg_pool.get_pg_conn() as conn:
-            conn.execute(
-                "UPDATE assets SET status = %s, error_reason = %s WHERE asset_id = %s",
-                (AssetStatus.FAILED.value, str(e), asset_id)
-            )
         raise
+    finally:
+        if local_raw_file and os.path.exists(local_raw_file):
+            try:
+                os.unlink(local_raw_file)
+            except OSError:
+                logger.warning("Failed to delete temp file %s", local_raw_file)
 
 
 def clone_image_variants(cur, canonical_asset_id: str, new_asset_id: str) -> int:

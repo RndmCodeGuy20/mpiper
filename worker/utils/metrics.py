@@ -11,7 +11,6 @@ This module provides metrics for:
 - Database operations
 """
 
-import os
 import socket
 from typing import Optional
 
@@ -56,19 +55,15 @@ db_query_duration: Optional[metrics.Histogram] = None
 def init_metrics(
     service_name: str = "mpiper-worker",
     service_version: str = "dev",
-    endpoint: Optional[str] = None,
+    endpoint: str = "otel-collector:4317",
+    deployment_env: str = "development",
+    instance_id: Optional[str] = None,
+    tls_insecure: bool = True,
 ) -> None:
     """Initialize OpenTelemetry metrics with OTLP exporter.
-    
-    Parameters
-    ----------
-    service_name : str
-        Name of the service for metrics identification
-    service_version : str
-        Version of the service
-    endpoint : Optional[str]
-        OTLP collector endpoint (e.g., "otel-collector:4317")
-        If not provided, reads from OTEL_EXPORTER_OTLP_ENDPOINT env var
+
+    All parameters should be sourced from the centralised config (get_config().otel)
+    rather than read directly from environment variables.
     """
     global _meter
     global queue_message_consumed, queue_message_failed, queue_processing_duration
@@ -82,28 +77,21 @@ def init_metrics(
         logger.warning("Metrics already initialized")
         return
 
-    # Get endpoint from parameter or environment
-    if endpoint is None:
-        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317")
-    
-    # Strip any URL scheme (grpc://, http://, https://)
     if "://" in endpoint:
         endpoint = endpoint.split("://", 1)[1]
 
     logger.info(f"Initializing OpenTelemetry metrics with endpoint: {endpoint}")
 
-    # Create resource with service information
     resource = Resource.create({
-        SERVICE_NAME: os.getenv("SERVICE_NAME", service_name),
-        SERVICE_VERSION: os.getenv("SERVICE_VERSION", service_version),
-        DEPLOYMENT_ENVIRONMENT: os.getenv("DEPLOYMENT_ENV", "development"),
-        SERVICE_INSTANCE_ID: os.getenv("HOSTNAME", socket.gethostname()),
+        SERVICE_NAME: service_name,
+        SERVICE_VERSION: service_version,
+        DEPLOYMENT_ENVIRONMENT: deployment_env,
+        SERVICE_INSTANCE_ID: instance_id or socket.gethostname(),
     })
 
-    # Create OTLP exporter
     exporter = OTLPMetricExporter(
         endpoint=endpoint,
-        insecure=True,  # TODO: Enable TLS in production
+        insecure=tls_insecure,
     )
 
     # Create metric reader with 15-second export interval

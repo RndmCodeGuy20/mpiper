@@ -1,0 +1,7 @@
+version: '3'
+
+tasks:
+  placeholder:
+    desc: Database tasks placeholder - will be populated when migrations are added
+    cmds:
+      - echo "No database migration tasks configured yet"

@@ -1,0 +1,20 @@
+version: '3'
+
+tasks:
+  unit:
+    desc: Run unit tests
+    cmds:
+      - gotestsum --format testname --format-icons codicons -- -v {{.CLI_ARGS}}
+
+  race:
+    cmds:
+      - go test ./... -race
+
+  coverage:
+    cmds:
+      - go test ./... -coverprofile=coverage.out
+
+  all:
+    cmds:
+      - task: unit
+      - task: race

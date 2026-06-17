@@ -108,3 +108,13 @@ tests/logs/
 coverage-reports/
 coverage
 API_DOCUMENTATION.md
+
+.code_graph/
+
+.kimchi/
+
+.codegraph/
+# local e2e verification (do not commit)
+.env.local
+.secrets/
+docker-compose.override.yml

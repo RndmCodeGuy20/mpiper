@@ -1,8 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -45,74 +48,200 @@ type RedisConfig struct {
 	WriteTimeout     time.Duration
 }
 
-type EnvConfig struct {
-	Environment string
-	Server      ServerConfig
-	DB          DatabaseConfig
-	Redis       RedisConfig
+type OtelConfig struct {
+	Endpoint          string
+	TLSInsecure       bool
+	DeploymentEnv     string
+	TraceSamplingRate float64
+	ServiceName       string
+	ServiceVersion    string
 }
 
-func GetEnvConfig(envFile string) (EnvConfig, error) {
-	_ = godotenv.Load(envFile) // Load .env file if it exists
+type GCSConfig struct {
+	SAPath string
+}
 
-	host := os.Getenv("HOST")
-	if host == "" {
-		host = "0.0.0.0"
+type S3Config struct {
+	Bucket          string
+	Region          string
+	AccessKeyID     string
+	SecretAccessKey string
+	EndpointURL     string // optional — set for MinIO / S3-compatible stores
+}
+
+type StorageConfig struct {
+	Provider string
+	Bucket   string
+	GCS      GCSConfig
+	S3       S3Config
+}
+
+type EnvConfig struct {
+	Environment        string
+	Server             ServerConfig
+	DB                 DatabaseConfig
+	Redis              RedisConfig
+	Otel               OtelConfig
+	Storage            StorageConfig
+	CORSAllowedOrigins []string
+	LogLevel           string
+	EncryptionKey      string
+	AutoMigrate        bool
+	MaxAssetSizeBytes  int64
+}
+
+// --- Singleton ---
+
+var (
+	instance *EnvConfig
+	once     sync.Once
+)
+
+// Init stores cfg as the package-level singleton. Must be called once at startup before MustGet.
+func Init(cfg EnvConfig) {
+	once.Do(func() { instance = &cfg })
+}
+
+// MustGet returns the singleton config. Panics if Init has not been called.
+func MustGet() *EnvConfig {
+	if instance == nil {
+		panic("config: MustGet called before Init — call config.Init(cfg) at startup")
 	}
+	return instance
+}
+
+// --- Loading ---
+
+func GetEnvConfig(envFile string) (EnvConfig, error) {
+	_ = godotenv.Load(envFile)
+
+	host := envOr("HOST", "0.0.0.0")
+
 	port, err := strconv.Atoi(os.Getenv("PORT"))
 	if err != nil {
-		port = 5010 // default port
+		port = 5010
 	}
-	dbHost := os.Getenv("DB_HOST")
+
 	dbPort, err := strconv.Atoi(os.Getenv("DB_PORT"))
 	if err != nil {
-		dbPort = 5432 // default DB port
+		dbPort = 5432
 	}
-	dbUser := os.Getenv("DB_USER")
-	dbPassword := os.Getenv("DB_PASSWORD")
-	dbName := os.Getenv("DB_NAME")
-	env := os.Getenv("ENV")
-	connectionString := os.Getenv("REDIS_CONNECTION_STRING")
 
+	env := os.Getenv("ENV")
 	if env == "" {
 		return EnvConfig{}, NewInitializationError("ENV is not set", nil)
 	}
 
+	dbUser := os.Getenv("DB_USER")
 	if dbUser == "" {
 		return EnvConfig{}, NewInitializationError("DB_USER is not set", nil)
 	}
 
+	dbPassword := os.Getenv("DB_PASSWORD")
 	if dbPassword == "" {
 		return EnvConfig{}, NewInitializationError("DB_PASSWORD is not set", nil)
 	}
 
+	dbName := os.Getenv("DB_NAME")
 	if dbName == "" {
 		return EnvConfig{}, NewInitializationError("DB_NAME is not set", nil)
 	}
 
-	if connectionString == "" {
-		return EnvConfig{}, NewInitializationError("REDIS_URL is not set", nil)
+	redisConnStr := os.Getenv("REDIS_CONNECTION_STRING")
+	if redisConnStr == "" {
+		return EnvConfig{}, NewInitializationError("REDIS_CONNECTION_STRING is not set", nil)
+	}
+
+	encryptionKey := os.Getenv("ENCRYPTION_KEY")
+	if encryptionKey == "" {
+		return EnvConfig{}, NewInitializationError("ENCRYPTION_KEY is not set", nil)
+	}
+	if len(encryptionKey) != 32 {
+		return EnvConfig{}, NewInitializationError(
+			fmt.Sprintf("ENCRYPTION_KEY must be exactly 32 bytes for AES-256, got %d", len(encryptionKey)), nil,
+		)
+	}
+
+	traceSamplingRate := 0.1
+	if raw := os.Getenv("TRACE_SAMPLING_RATE"); raw != "" {
+		if parsed, err := strconv.ParseFloat(raw, 64); err == nil {
+			traceSamplingRate = parsed
+		}
+	}
+
+	maxAssetSize := int64(500 * 1024 * 1024)
+	if raw := os.Getenv("MAX_ASSET_SIZE_BYTES"); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			maxAssetSize = n
+		}
+	}
+
+	corsOrigins := []string{"http://localhost:5173"}
+	if raw := os.Getenv("CORS_ALLOWED_ORIGINS"); raw != "" {
+		corsOrigins = strings.Split(raw, ",")
 	}
 
 	return EnvConfig{
 		Environment: env,
 		Server: ServerConfig{
-			Port: port, // default port
+			Port: port,
 			Host: host,
 		},
 		DB: DatabaseConfig{
-			Host:     dbHost,
-			Port:     dbPort, // default DB port
+			Host:     envOr("DB_HOST", "localhost"),
+			Port:     dbPort,
 			User:     dbUser,
 			Password: dbPassword,
 			Name:     dbName,
 			SSLMode:  "disable",
 		},
 		Redis: RedisConfig{
-			ConnectionString: connectionString,
+			ConnectionString: redisConnStr,
 		},
+		Otel: OtelConfig{
+			Endpoint:          envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317"),
+			TLSInsecure:       parseTLSInsecure(os.Getenv("OTEL_TLS_INSECURE")),
+			DeploymentEnv:     envOr("DEPLOYMENT_ENV", env),
+			TraceSamplingRate: traceSamplingRate,
+			ServiceName:       envOr("SERVICE_NAME", "mpiper-api"),
+			ServiceVersion:    envOr("SERVICE_VERSION", "dev"),
+		},
+		Storage: StorageConfig{
+			Provider: envOr("BUCKET_PROVIDER", "gcs"),
+			Bucket:   envOr("BUCKET_NAME", "mpiper"),
+			GCS: GCSConfig{
+				SAPath: os.Getenv("GCS_SA_PATH"),
+			},
+			S3: S3Config{
+				Bucket:          envOr("S3_BUCKET_NAME", envOr("BUCKET_NAME", "mpiper")),
+				Region:          os.Getenv("S3_REGION"),
+				AccessKeyID:     os.Getenv("S3_ACCESS_KEY_ID"),
+				SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
+				EndpointURL:     os.Getenv("S3_ENDPOINT_URL"),
+			},
+		},
+		CORSAllowedOrigins: corsOrigins,
+		LogLevel:           envOr("LOG_LEVEL", "INFO"),
+		EncryptionKey:      encryptionKey,
+		AutoMigrate:        strings.ToLower(os.Getenv("AUTO_MIGRATE")) == "true",
+		MaxAssetSizeBytes:  maxAssetSize,
 	}, nil
 }
+
+// parseTLSInsecure defaults to plaintext (true); TLS is opt-in via OTEL_TLS_INSECURE=false.
+// The bundled collector speaks plaintext gRPC, so secure-by-default would silently drop all telemetry.
+func parseTLSInsecure(raw string) bool {
+	return strings.ToLower(strings.TrimSpace(raw)) != "false"
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// --- Environment type helpers ---
 
 type Environment string
 

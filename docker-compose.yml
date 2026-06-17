@@ -1,0 +1,133 @@
+# ============================================================================
+# MPiper — Core services
+#
+#   docker compose up
+#
+# Core stack: api, worker, postgres, redis on the `mpiper_net` bridge network.
+# Services address each other by service name (DB_HOST=postgres, etc.).
+#
+# Optional observability overlay (otel-collector + Grafana/Tempo/Prometheus/Loki):
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up
+#
+# Copy .env.example -> .env.local and fill in required values before running.
+# ============================================================================
+
+name: mpiper
+
+services:
+  # ==========================================================================
+  # Go API server
+  # ==========================================================================
+  api:
+    build:
+      context: .
+      dockerfile: deploy/docker/mpiper.dockerfile
+    container_name: mpiper-api
+    env_file:
+      - .env.local
+    environment:
+      # Compose-internal addressing — services reach each other by name.
+      DB_HOST: postgres
+      REDIS_CONNECTION_STRING: redis://redis:6379/0
+      # Always apply migrations on first run; override in a compose override file.
+      AUTO_MIGRATE: "true"
+    ports:
+      - "5010:5010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mpiper_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/mpiper", "--health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ==========================================================================
+  # Python media worker
+  # ==========================================================================
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/docker/worker.dockerfile
+    container_name: mpiper-worker
+    env_file:
+      - .env.local
+    environment:
+      # Compose-internal addressing — services reach each other by name.
+      DB_HOST: postgres
+      REDIS_CONNECTION_STRING: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mpiper_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/worker_healthy || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  # ==========================================================================
+  # Postgres — durable source of truth
+  # ==========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: mpiper-postgres
+    # Postgres init reads POSTGRES_* below. These mirror DB_USER/DB_PASSWORD/DB_NAME.
+    # Values interpolate from a `.env` file or the shell; the defaults match
+    # .env.example so plain `docker compose up` works out of the box. To override,
+    # set DB_USER / DB_PASSWORD / DB_NAME in `.env` (compose's default env file).
+    environment:
+      POSTGRES_USER: ${DB_USER:-mpiper}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_DB: ${DB_NAME:-mpiper}
+    volumes:
+      - mpiper_postgres_data:/var/lib/postgresql/data
+    networks:
+      - mpiper_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ==========================================================================
+  # Redis — transport-only (ephemeral, no volume by design)
+  # ==========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: mpiper-redis
+    networks:
+      - mpiper_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+# ============================================================================
+# NETWORKS
+# ============================================================================
+networks:
+  mpiper_net:
+    driver: bridge
+    name: mpiper_net
+
+# ============================================================================
+# VOLUMES
+# ============================================================================
+volumes:
+  mpiper_postgres_data:   # Postgres data — persists across restarts

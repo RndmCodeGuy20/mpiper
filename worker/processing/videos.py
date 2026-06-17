@@ -1,8 +1,10 @@
 import hashlib
 import json
-import subprocess
-import os
 import logging
+import os
+import shutil
+import subprocess
+import tempfile
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger("videos")
@@ -58,7 +60,7 @@ def ensure_variant_exists(
     # CORRECT: Storage key uses variant_hash, not content_hash in path
     # This way, identical variants from different content share the same file
     key = f"media/variants/{variant_hash[:2]}/{variant_hash}.{ext}"
-    url = f"https://storage.googleapis.com/{cfg.bucket.bucket_name}/{key}"
+    url = storage.public_url(key)
 
     with pg_pool.get_pg_conn() as conn:
         cur = conn.cursor()
@@ -76,15 +78,19 @@ def ensure_variant_exists(
 
         # Variant doesn't exist - generate it
         logger.info("Generating new variant %s for role=%s", variant_hash, role)
-        tmp_path = os.path.join(cfg.temp_dir, f"{variant_hash}.{ext}")
+        tmpdir = tempfile.mkdtemp(dir=cfg.temp_dir)
+        try:
+            tmp_path = os.path.join(tmpdir, f"{variant_hash}.{ext}")
 
-        # Call the generator function (passed in by caller)
-        metadata = generator_fn(tmp_path, params)
+            # Call the generator function (passed in by caller)
+            metadata = generator_fn(tmp_path, params)
 
-        # Upload to storage
-        with open(tmp_path, "rb") as f:
-            data = f.read()
+            # Upload to storage
+            with open(tmp_path, "rb") as f:
+                data = f.read()
             storage.upload_bytes(key, data, mime_type)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
         # Store variant metadata
         if variant_type == "image":
@@ -124,12 +130,6 @@ def ensure_variant_exists(
                     metadata.get("manifest_url"), url, json.dumps(params)
                 ),
             )
-
-        # Clean up temp file
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
 
         return url
 

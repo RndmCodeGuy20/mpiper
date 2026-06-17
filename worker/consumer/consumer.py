@@ -27,6 +27,7 @@ Notes about external expectations:
 
 from __future__ import annotations
 
+import time
 from typing import Dict
 
 import redis
@@ -34,7 +35,7 @@ from redis.exceptions import ResponseError
 
 from worker.consumer.config import WorkerConfig
 from worker.consumer.db import PgPool
-from worker.processing.processor import process_asset_dispatch
+from worker.processing.processor import RetryableException, process_asset_dispatch
 from worker.storage.base import StorageX
 from worker.utils.logger import get_logger
 
@@ -84,6 +85,13 @@ class Consumer:
         self.storage = storage
         self.cfg = cfg
 
+        # Periodic recovery state. _last_recovery = 0 makes recovery run on the
+        # first consume() so leftovers from a prior crash are swept at startup.
+        # The interval matches the 2-minute staleness threshold in the recovery
+        # query. See DEV-35.
+        self._last_recovery = 0.0
+        self._recovery_interval = 120.0
+
         # Ensure the consumer group exists. If it already exists Redis raises an
         # error; ignore that specific error.
         try:
@@ -92,6 +100,15 @@ class Consumer:
             )
         except ResponseError as exc:
             logger.debug("consumer group exists or cannot be created: %s", exc)
+
+        # Write a health sentinel once the consumer group is initialised. The
+        # container healthcheck (test -f /tmp/worker_healthy) reads this file.
+        # Reaching this point means Redis is connected and the group exists.
+        try:
+            with open("/tmp/worker_healthy", "w") as fh:
+                fh.write("ok")
+        except OSError as exc:
+            logger.warning("could not write health sentinel: %s", exc)
 
     def consume(self, consumer_name: str) -> bool:
         """Poll the stream and process a single message.
@@ -112,6 +129,11 @@ class Consumer:
             True if a message was consumed (even if processing failed), False if
             no messages were available.
         """
+        # Recover stuck jobs on a fixed cadence, independent of load. Doing this
+        # only on the idle path meant recovery never ran under sustained load —
+        # exactly when crashed-mid-job rows are most likely. See DEV-35.
+        self._maybe_recover()
+
         # Read one message for this consumer (blocking short period)
         resp = self.redis.xreadgroup(
             groupname=self.cfg.consumer_group,
@@ -122,8 +144,6 @@ class Consumer:
         )
 
         if not resp:
-            # No messages available; attempt recovery of stuck jobs and return.
-            self._recover_stuck_pending()
             return False
 
         # Response format: [(stream_name, [(msg_id, {field: value}), ...])]
@@ -216,7 +236,12 @@ class Consumer:
                 row = cur.fetchone()
                 attempts_now = row[0] if row else 0
 
-                if attempts_now >= self.cfg.redis.max_retries:
+                # Only RetryableException is worth retrying. Any other exception
+                # is permanent (bad asset type, corrupt file, decode failure) —
+                # fail it immediately instead of burning the whole retry budget.
+                retryable = isinstance(exc, RetryableException)
+
+                if not retryable or attempts_now >= self.cfg.redis.max_retries:
                     cur.execute(
                         "UPDATE jobs SET status = 'failed', last_error = %s, updated_at = now() WHERE job_id = %s",
                         (str(exc), str(job_id)),
@@ -230,6 +255,7 @@ class Consumer:
                         "UPDATE jobs SET status = 'pending', last_error = %s, updated_at = now() WHERE job_id = %s",
                         (str(exc), str(job_id)),
                     )
+                conn.commit()
             # Leave the Redis message unacked so it remains in the pending list.
             return
 
@@ -244,6 +270,7 @@ class Consumer:
                 "UPDATE assets SET status = 'ready', updated_at = now() WHERE asset_id = %s",
                 (asset_id,),
             )
+            conn.commit()
 
         # Acknowledge the Redis stream message.
         self.redis.xack(self.cfg.stream_name, self.cfg.consumer_group, msg_id)
@@ -302,6 +329,17 @@ class Consumer:
 
         # Delegate to _handle_job using the job id we now have.
         self._handle_job(job_id, msg_id)
+
+    def _maybe_recover(self) -> None:
+        """Run stuck-job recovery if the recovery interval has elapsed.
+
+        Time-gated so recovery fires on a fixed cadence regardless of whether
+        the consumer is busy or idle.
+        """
+        now = time.time()
+        if now - self._last_recovery >= self._recovery_interval:
+            self._last_recovery = now
+            self._recover_stuck_pending()
 
     def _recover_stuck_pending(self) -> None:
         """Requeue stale pending/in_progress jobs back onto the stream.
