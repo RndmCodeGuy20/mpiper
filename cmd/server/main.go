@@ -20,7 +20,7 @@ import (
 
 var (
 	Env        = "development"
-	Version    = "0.1.0"
+	Version    = "1.0.0"
 	CommitHash = "abc1234"
 	BuildTime  = "2024-06-01T12:00:00Z"
 	Author     = "RndmCodeGuy"

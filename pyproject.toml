@@ -1,6 +1,6 @@
 [project]
 name = "mpiper"
-version = "0.1.0"
+version = "1.0.0"
 description = "A consumer for the mpiper queue system"
 authors = [
     {name = "Shantanu Mane",email = "shantanu.mane.200@outlook.com"}
@@ -32,7 +32,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 package-mode = false
 name = "mpiper"
-version = "0.1.0"
+version = "1.0.0"
 description = "A consumer for the mpiper queue system"
 authors = ["Shantanu Mane <shantanu.mane.200@gmail.com>"]
 
