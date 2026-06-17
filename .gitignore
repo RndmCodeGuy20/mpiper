@@ -93,7 +93,10 @@ coverage/
 .vscode/
 *.code-workspace
 # Ignore generated documentation
-docs/
+docs/superpowers/
+docs/*.json
+docs/ASSESSMENT.md
+docs/FIX_PLAN.md
 doc/
 *.pdf
 # Ignore custom files
