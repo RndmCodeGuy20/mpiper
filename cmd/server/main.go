@@ -13,7 +13,11 @@ import (
 	"github.com/rndmcodeguy20/mpiper/internal/config"
 	"github.com/rndmcodeguy20/mpiper/internal/database"
 	"github.com/rndmcodeguy20/mpiper/internal/metrics"
+	"github.com/rndmcodeguy20/mpiper/internal/outbox"
+	"github.com/rndmcodeguy20/mpiper/internal/queue"
+	"github.com/rndmcodeguy20/mpiper/internal/repository"
 	"github.com/rndmcodeguy20/mpiper/internal/server"
+	"github.com/rndmcodeguy20/mpiper/internal/webhook"
 	"github.com/rndmcodeguy20/mpiper/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -90,6 +94,46 @@ func main() {
 		}
 		baseLogger.Info("Migrations applied successfully")
 	}
+
+	// --- Outbox relay ---
+	rc, err := queue.MustGetRedisClient(&cfg.Redis, baseLogger)
+	if err != nil {
+		baseLogger.Sugar().Fatalf("Failed to create Redis client: %v", err)
+	}
+	rq := queue.NewRedisQueue(serverCtx, rc, queue.RedisQueueOptions{
+		QueueName:         "media:jobs",
+		ConnectionTimeOut: 2 * time.Second,
+		MaxStreamLength:   10_000,
+		MaxRetries:        3,
+		RetryInterval:     2 * time.Second,
+		EnableMetrics:     true,
+	}, baseLogger, m)
+
+	outboxRepo := repository.NewOutboxRepository(db, baseLogger)
+	relay := outbox.NewRelay(outboxRepo, rq, baseLogger, m, cfg.Outbox.RelayInterval, cfg.Outbox.RelayBatch)
+	_ = m.RegisterOutboxPendingFunc(func(ctx context.Context) (int64, error) {
+		return outboxRepo.CountPending(ctx)
+	})
+	go relay.Start(serverCtx)
+	go relay.StartCleanup(serverCtx, cfg.Outbox.Retention)
+
+	// --- Webhook dispatcher ---
+	webhookDispatcher := webhook.NewDispatcher(db, baseLogger, webhook.DispatcherConfig{
+		PollInterval:  cfg.Webhook.PollInterval,
+		BatchSize:     cfg.Webhook.BatchSize,
+		Timeout:       cfg.Webhook.Timeout,
+		MaxAttempts:   cfg.Webhook.MaxAttempts,
+		EncryptionKey: cfg.EncryptionKey,
+		Retention:     cfg.Webhook.Retention,
+	})
+	go webhookDispatcher.Start(serverCtx)
+	go webhookDispatcher.StartCleanup(serverCtx)
+
+	_ = m.RegisterWebhookPendingFunc(func(ctx context.Context) (int64, error) {
+		var count int64
+		err := db.GetContext(ctx, &count, `SELECT COUNT(*) FROM webhook_deliveries WHERE status = 'pending'`)
+		return count, err
+	})
 
 	srv := server.NewServer(db, cfg, m)
 	go func() {

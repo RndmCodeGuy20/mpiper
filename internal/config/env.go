@@ -76,6 +76,21 @@ type StorageConfig struct {
 	S3       S3Config
 }
 
+type OutboxConfig struct {
+	RelayInterval time.Duration
+	RelayBatch    int
+	MaxAttempts   int
+	Retention     time.Duration
+}
+
+type WebhookConfig struct {
+	PollInterval time.Duration
+	BatchSize    int
+	Timeout      time.Duration
+	MaxAttempts  int
+	Retention    time.Duration
+}
+
 type EnvConfig struct {
 	Environment        string
 	Server             ServerConfig
@@ -83,6 +98,8 @@ type EnvConfig struct {
 	Redis              RedisConfig
 	Otel               OtelConfig
 	Storage            StorageConfig
+	Outbox             OutboxConfig
+	Webhook            WebhookConfig
 	CORSAllowedOrigins []string
 	LogLevel           string
 	EncryptionKey      string
@@ -181,6 +198,62 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 		corsOrigins = strings.Split(raw, ",")
 	}
 
+	outboxRelayInterval := time.Second
+	if raw := os.Getenv("OUTBOX_RELAY_INTERVAL"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			outboxRelayInterval = d
+		}
+	}
+	outboxRelayBatch := 100
+	if raw := os.Getenv("OUTBOX_RELAY_BATCH"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			outboxRelayBatch = n
+		}
+	}
+	outboxMaxAttempts := 5
+	if raw := os.Getenv("OUTBOX_MAX_ATTEMPTS"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			outboxMaxAttempts = n
+		}
+	}
+	outboxRetention := 168 * time.Hour
+	if raw := os.Getenv("OUTBOX_RETENTION"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			outboxRetention = d
+		}
+	}
+
+	webhookPollInterval := 2 * time.Second
+	if raw := os.Getenv("WEBHOOK_POLL_INTERVAL"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			webhookPollInterval = d
+		}
+	}
+	webhookBatchSize := 50
+	if raw := os.Getenv("WEBHOOK_BATCH_SIZE"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			webhookBatchSize = n
+		}
+	}
+	webhookTimeout := 10 * time.Second
+	if raw := os.Getenv("WEBHOOK_TIMEOUT"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			webhookTimeout = d
+		}
+	}
+	webhookMaxAttempts := 5
+	if raw := os.Getenv("WEBHOOK_MAX_ATTEMPTS"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			webhookMaxAttempts = n
+		}
+	}
+	webhookRetention := 168 * time.Hour
+	if raw := os.Getenv("WEBHOOK_RETENTION"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			webhookRetention = d
+		}
+	}
+
 	return EnvConfig{
 		Environment: env,
 		Server: ServerConfig{
@@ -225,6 +298,19 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 		EncryptionKey:      encryptionKey,
 		AutoMigrate:        strings.ToLower(os.Getenv("AUTO_MIGRATE")) == "true",
 		MaxAssetSizeBytes:  maxAssetSize,
+		Outbox: OutboxConfig{
+			RelayInterval: outboxRelayInterval,
+			RelayBatch:    outboxRelayBatch,
+			MaxAttempts:   outboxMaxAttempts,
+			Retention:     outboxRetention,
+		},
+		Webhook: WebhookConfig{
+			PollInterval: webhookPollInterval,
+			BatchSize:    webhookBatchSize,
+			Timeout:      webhookTimeout,
+			MaxAttempts:  webhookMaxAttempts,
+			Retention:    webhookRetention,
+		},
 	}, nil
 }
 

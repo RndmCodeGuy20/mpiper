@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,9 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/rndmcodeguy20/mpiper/internal/config"
 	"github.com/rndmcodeguy20/mpiper/internal/metrics"
+	"github.com/rndmcodeguy20/mpiper/internal/middleware"
 	"github.com/rndmcodeguy20/mpiper/internal/models"
-	"github.com/rndmcodeguy20/mpiper/internal/queue"
-	lredis "github.com/rndmcodeguy20/mpiper/internal/queue"
 	"github.com/rndmcodeguy20/mpiper/internal/repository"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils/storagex"
 	"go.opentelemetry.io/otel"
@@ -29,14 +29,14 @@ type AssetService interface {
 
 type assetService struct {
 	assetRepo     repository.AssetRepository
+	outboxRepo    repository.OutboxRepository
 	logger        *zap.Logger
 	storageClient storagex.StorageX
 	bucket        string
-	queue         *queue.RedisQueue
 	m             *metrics.Metrics
 }
 
-func NewAssetService(redisCfg *config.RedisConfig, assetRepo repository.AssetRepository, logger *zap.Logger, m *metrics.Metrics) AssetService {
+func NewAssetService(assetRepo repository.AssetRepository, outboxRepo repository.OutboxRepository, logger *zap.Logger, m *metrics.Metrics) AssetService {
 	ctx := context.Background()
 	storeCfg := config.MustGet().Storage
 
@@ -60,22 +60,12 @@ func NewAssetService(redisCfg *config.RedisConfig, assetRepo repository.AssetRep
 		logger.Sugar().Fatalf("Failed to initialize storage client: %v", err)
 	}
 
-	rc, err := lredis.MustGetRedisClient(redisCfg, logger)
-	rq := lredis.NewRedisQueue(ctx, rc, lredis.RedisQueueOptions{
-		QueueName:         "media:jobs",
-		ConnectionTimeOut: 2 * time.Second,
-		MaxStreamLength:   10_000,
-		MaxRetries:        3,
-		RetryInterval:     2 * time.Second,
-		EnableMetrics:     true,
-	}, logger, m)
-
 	return &assetService{
 		assetRepo:     assetRepo,
+		outboxRepo:    outboxRepo,
 		logger:        logger,
 		storageClient: storageClient,
 		bucket:        bucket,
-		queue:         rq,
 		m:             m,
 	}
 }
@@ -133,7 +123,8 @@ func (s *assetService) CreateAsset(ctx context.Context, request models.UploadAss
 
 	spanStorageCtx, spanStorage = tracer.Start(ctx, "AssetRepo.CreateAsset")
 	spanStorage.SetAttributes(attribute.String("asset_id", assetID.String()))
-	err = s.assetRepo.CreateAsset(spanStorageCtx, assetID, publicUrl, request.Size, repository.ToAssetTypeFromMimeType(request.ContentType), request.ContentType)
+	ownerID, _ := middleware.GetUserID(ctx)
+	err = s.assetRepo.CreateAsset(spanStorageCtx, assetID, publicUrl, request.Size, repository.ToAssetTypeFromMimeType(request.ContentType), request.ContentType, ownerID)
 	spanStorage.End()
 
 	if err != nil {
@@ -257,6 +248,49 @@ func (s *assetService) MarkAssetUploaded(ctx context.Context, assetID uuid.UUID)
 
 	spanJob.SetAttributes(attribute.Int64("job_id", *jobID))
 
+	// Insert outbox row in the same transaction — atomic with job + asset status.
+	ctxOutbox, spanOutbox := tracer.Start(ctxTx, "OutboxRepo.InsertTx")
+	spanOutbox.SetAttributes(attribute.String("asset_id", assetID.String()), attribute.Int64("job_id", *jobID))
+	payload, _ := json.Marshal(map[string]interface{}{
+		"job_id":    *jobID,
+		"asset_id":  assetID.String(),
+		"event":     "asset_uploaded",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
+	err = s.outboxRepo.InsertTx(ctxOutbox, tx, models.OutboxEvent{
+		AggregateID: assetID,
+		JobID:       jobID,
+		Event:       "asset_uploaded",
+		Payload:     payload,
+	})
+	spanOutbox.End()
+
+	if err != nil {
+		spanOutbox.RecordError(err)
+		spanOutbox.SetStatus(codes.Error, "Failed to insert outbox event")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Outbox insert failed")
+		s.logger.Sugar().Errorf("Failed to insert outbox event: %v", err)
+		return err
+	}
+
+	// Insert job.starting webhook deliveries for matching registrations (same tx).
+	webhookPayload, _ := json.Marshal(map[string]interface{}{
+		"event":    "job.starting",
+		"asset_id": assetID.String(),
+		"job_id":   *jobID,
+		"status":   "starting",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
+	_, _ = tx.ExecContext(ctxTx,
+		`INSERT INTO webhook_deliveries (registration_id, event, asset_id, job_id, payload)
+		 SELECT wr.id, 'job.starting', $1, $2, $3::jsonb
+		 FROM webhook_registrations wr
+		 JOIN assets a ON a.owner_id = wr.user_id
+		 WHERE a.asset_id = $1 AND wr.events @> '["job.starting"]'::jsonb`,
+		assetID, *jobID, webhookPayload,
+	)
+
 	err = tx.Commit()
 	if err != nil {
 		spanTx.RecordError(err)
@@ -268,29 +302,6 @@ func (s *assetService) MarkAssetUploaded(ctx context.Context, assetID uuid.UUID)
 	tx = nil // Prevent deferred rollback after commit
 	spanTx.SetStatus(codes.Ok, "Transaction committed")
 
-	ctxQueue, spanQueue := tracer.Start(ctx, "Queue.Enqueue")
-	spanQueue.SetAttributes(
-		attribute.Int64("job_id", *jobID),
-		attribute.String("asset_id", assetID.String()),
-		attribute.String("event", "asset_uploaded"),
-	)
-	_, err = s.queue.Enqueue(ctxQueue, map[string]interface{}{
-		"job_id":    *jobID,
-		"asset_id":  assetID.String(),
-		"event":     "asset_uploaded",
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-	})
-	spanQueue.End()
-
-	if err != nil {
-		spanQueue.RecordError(err)
-		spanQueue.SetStatus(codes.Error, "Failed to enqueue job")
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "Queue enqueue failed")
-		return err
-	}
-
-	spanQueue.SetStatus(codes.Ok, "Job enqueued successfully")
-	span.SetStatus(codes.Ok, "Asset marked as uploaded and job queued")
+	span.SetStatus(codes.Ok, "Asset marked as uploaded and outbox event created")
 	return nil
 }

@@ -91,8 +91,8 @@ func ToAssetTypeFromMimeType(mimeType string) AssetType {
 }
 
 type AssetRepository interface {
-	CreateAsset(ictx context.Context, d uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error
-	CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error
+	CreateAsset(ctx context.Context, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string, ownerID string) error
+	CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string, ownerID string) error
 	MarkAssetUploadedTx(ctx context.Context, tx *sql.Tx, id uuid.UUID) (bool, error)
 	InsertProcessAssetJobTx(ctx context.Context, tx *sql.Tx, assetID uuid.UUID) (*int64, error)
 	GetDB() *sqlx.DB
@@ -112,9 +112,9 @@ func (r *assetRepo) GetDB() *sqlx.DB {
 	return r.db
 }
 
-func (r *assetRepo) CreateAsset(ctx context.Context, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error {
+func (r *assetRepo) CreateAsset(ctx context.Context, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string, ownerID string) error {
 	start := time.Now()
-	query := `INSERT INTO assets (asset_id, original_url, type, mime_type, status, size_bytes) VALUES ($1, $2, $3, $4, $5, $6);`
+	query := `INSERT INTO assets (asset_id, original_url, type, mime_type, status, size_bytes, owner_id) VALUES ($1, $2, $3, $4, $5, $6, $7);`
 	_, err := r.db.ExecContext(
 		ctx,
 		query,
@@ -124,6 +124,7 @@ func (r *assetRepo) CreateAsset(ctx context.Context, id uuid.UUID, url string, s
 		mimeType,
 		StatusUploading,
 		size,
+		ownerID,
 	)
 
 	// Record database metrics
@@ -151,9 +152,9 @@ func (r *assetRepo) CreateAsset(ctx context.Context, id uuid.UUID, url string, s
 	return nil
 }
 
-func (r *assetRepo) CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string) error {
+func (r *assetRepo) CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string, ownerID string) error {
 	start := time.Now()
-	query := `INSERT INTO assets (asset_id, original_url, type, mime_type, status, size_bytes) VALUES ($1, $2, $3, $4, $5, $6);`
+	query := `INSERT INTO assets (asset_id, original_url, type, mime_type, status, size_bytes, owner_id) VALUES ($1, $2, $3, $4, $5, $6, $7);`
 	_, err := tx.ExecContext(
 		ctx,
 		query,
@@ -163,6 +164,7 @@ func (r *assetRepo) CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID,
 		mimeType,
 		StatusUploading,
 		size,
+		ownerID,
 	)
 
 	// Record database metrics

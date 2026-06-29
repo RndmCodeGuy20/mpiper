@@ -58,3 +58,6 @@ func GetUserID(ctx context.Context) (string, bool) {
 	userID, ok := ctx.Value(userIDKey).(string)
 	return userID, ok
 }
+
+// UserIDKey returns the context key used for storing user_id. Exported for testing.
+func UserIDKey() contextKey { return userIDKey }
