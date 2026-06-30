@@ -41,30 +41,33 @@ so the pipeline absorbs bursts (scale up) and stops wasting capacity when idle
 
 ## 3. Prerequisites & gotchas verified in code (do these FIRST)
 
-- **⚠️ The queue-depth gauge is NOT wired.** `internal/metrics/metrics.go` defines
-  `QueueDepth` and `RegisterQueueDepthFunc(...)`, but **`cmd/server/main.go` never
-  calls it** (it calls `RegisterOutboxPendingFunc` and `RegisterWebhookPendingFunc`
-  only). So `queue.depth` is defined-but-empty, and `sli:queue_depth:current`
-  reads off it. **Task 0: wire it** — register a callback returning
-  `XLEN media:jobs` (or, better, the consumer-group *lag*: `XINFO GROUPS` →
-  `lag`, which excludes already-delivered-but-unacked entries). Without a recorded
-  signal there is nothing to autoscale on.
-- **Queue depth vs lag.** `XLEN media:jobs` counts *all* stream entries (acked ones
-  linger until trimmed — `MaxStreamLength: 10_000` in `queue.NewRedisQueue`), so it
-  is **not** a true backlog. Prefer the consumer-group **`lag`** (undelivered) and/or
-  the **oldest-pending age** via `XPENDING`. Decide and document which signal drives
-  scaling.
+- **The scaling signal that exists today is `queue.depth = XLEN`, which is NOT a
+  true backlog.** `RegisterQueueDepthFunc` *is* wired — in
+  `internal/queue/queue.go` (~L79), not `main.go` — and reports `XLEN media:jobs`.
+  But `XLEN` counts **all** stream entries, including acked-but-untrimmed ones
+  (`MaxStreamLength: 10_000` in `queue.NewRedisQueue`), so it stays high even when
+  the backlog is drained. **Don't autoscale on `queue.depth`.** `queue.processing.lag`
+  (a histogram, recorded in `queue.go` ~L177) measures per-message wait, not a
+  scalable gauge either.
+- **⚠️ Task 0: expose a true backlog signal.** Add a gauge for the consumer-group
+  **`lag`** (undelivered entries) and/or the **oldest-pending age** — e.g.
+  `XINFO GROUPS media:jobs` → `lag`, or `XPENDING` for the idle time of the oldest
+  pending entry. This is the signal a lag-driven scaler reads; `XLEN` will mislead it.
+  Decide and document which (lag vs age) drives scaling.
 - **k8s manifests already exist** but scale on the wrong signal: `deploy/k8s/worker-deployment.yaml`
   has `replicas: 2` and a **`HorizontalPodAutoscaler` (min 2 / max 10) on CPU 75% /
-  mem 85%**. Track 2 replaces/augments this with a **lag-driven** scaler.
+  mem 85%** — and **no `terminationGracePeriodSeconds`** (so it defaults to 30s).
+  Track 2 replaces/augments the HPA with a **lag-driven** scaler.
 - **`mcj ≈ cores-per-pod` (Track 1 lesson).** Autoscaling adds *pods*; each pod runs
   its own thread pool. Don't crank `MAX_CONCURRENT_JOBS` — set it to the pod's CPU
   limit and scale pod count. Oversubscription was measured to *reduce* throughput.
 - **Recovery interplay.** New pods join `worker-group` and read `>` (new messages);
   a scaled-*down* pod's in-flight work is abandoned and reclaimed by `XAUTOCLAIM`
-  after `RECOVERY_MIN_IDLE_MS` (default 120s). For responsive scale-down, ensure the
+  after `RECOVERY_MIN_IDLE_MS` (default 120s). For responsive scale-down, set the
   pod's `terminationGracePeriodSeconds` ≥ the worker's `SHUTDOWN_DRAIN_TIMEOUT`
-  (30s) so in-flight jobs drain instead of being abandoned. Verify both.
+  (default 30s, in `worker/consumer/main.py`) so in-flight jobs drain cleanly
+  instead of being abandoned and waiting out the 120s reclaim. Both default to 30s
+  today — tight; widen the grace period if jobs run longer.
 - **DB pool pressure.** N pods × `mcj` connections. Each pod sizes its pool to
   `mcj + 2` (`worker/consumer/db.py`). At max replicas this can exceed Postgres'
   `max_connections` — compute `maxReplicas × (mcj+2) + API pool` and cap accordingly
@@ -112,9 +115,11 @@ env knobs; `./loadtest/run.sh`). For k8s, run on the cluster the manifests targe
 
 ## 6. Suggested first-session scope
 
-1. **Task 0:** wire the consumer-group **lag** gauge (`RegisterQueueDepthFunc` is
-   unused) + a Grafana panel; prove it tracks a manually-XADD'd backlog. *Demo:*
-   panel moves with `XADD`/drain.
+1. **Task 0:** add a **consumer-group lag** gauge (and/or oldest-pending age) — a
+   *new* observable gauge alongside the existing (misleading) `queue.depth=XLEN`;
+   wire it like `queue.go` wires `RegisterQueueDepthFunc`, plus a Grafana panel.
+   Prove it tracks a manually-`XADD`'d backlog and falls to ~0 on drain. *Demo:*
+   panel moves with `XADD`/drain (and, unlike `queue.depth`, returns to 0).
 2. **Design doc** `track-02-autoscaling.md`: signal choice (lag vs depth vs age),
    scaler choice (KEDA vs prom-adapter), control-loop params, scale-down safety.
 3. **KEDA `ScaledObject`** on the worker Deployment driven by the lag signal;
@@ -130,4 +135,4 @@ worker, and is provable by re-running the existing k6 profile against the dashbo
 
 - [`track-01-handoff.md`](track-01-handoff.md) — topology, runbook, env, landmines (reuse).
 - [`experiments/0002-concurrent-worker.md`](../../experiments/0002-concurrent-worker.md) — the per-pod baseline μ to multiply by replica count.
-- `internal/metrics/metrics.go` (`QueueDepth`, `RegisterQueueDepthFunc`, `QueueProcessingLag`), `cmd/server/main.go` (where to wire it), `internal/queue/queue.go` (`MaxStreamLength`), `deploy/k8s/worker-deployment.yaml` (current CPU HPA to replace).
+- `internal/queue/queue.go` (~L79 `RegisterQueueDepthFunc`→`XLen`, ~L177 `QueueProcessingLag`) — model the new lag gauge on this wiring; `internal/queue/redis.go` (`XLen`, add an `XInfoGroups`/`XPending` helper); `internal/metrics/metrics.go` (instrument defs); `deploy/k8s/worker-deployment.yaml` (current CPU HPA + missing `terminationGracePeriodSeconds`).
