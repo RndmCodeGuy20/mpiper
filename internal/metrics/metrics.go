@@ -191,6 +191,20 @@ func InitMetrics(ctx context.Context, logger *zap.Logger) (*Metrics, func(contex
 				},
 			),
 		),
+		sdkmetric.WithView(
+			// Fine, milliseconds-resolution buckets for DB query latency. The
+			// default coarse buckets dump nearly all queries into [0,5), so the
+			// p95 reads ~4.75s — a pure artifact (true mean is ~18ms). These
+			// boundaries (1ms..2.5s) make the db.query.duration p95 meaningful.
+			sdkmetric.NewView(
+				sdkmetric.Instrument{Name: "db.query.duration", Kind: sdkmetric.InstrumentKindHistogram},
+				sdkmetric.Stream{
+					Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+						Boundaries: []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5},
+					},
+				},
+			),
+		),
 	)
 
 	otel.SetMeterProvider(mp)
