@@ -14,7 +14,8 @@ type Config struct {
 
 	// Common settings
 	Region          string
-	Endpoint        string // For custom endpoints (e.g., MinIO)
+	Endpoint        string // Internal/server-side endpoint (e.g., http://minio:9000)
+	PublicEndpoint  string // Optional client-facing endpoint used for presigned + public URLs (e.g., http://localhost:9000). Falls back to Endpoint when empty.
 	Bucket          string
 	AccessKeyID     string
 	SecretAccessKey string

@@ -22,17 +22,24 @@ import (
 )
 
 type s3Storage struct {
-	client   *s3.Client
-	presign  *s3.PresignClient
-	region   string
-	endpoint string // non-empty for MinIO / S3-compatible endpoints
-	logger   *zap.Logger
-	m        *metrics.Metrics
+	client         *s3.Client
+	presign        *s3.PresignClient
+	region         string
+	endpoint       string // internal/server-side endpoint for MinIO / S3-compatible stores
+	publicEndpoint string // client-facing endpoint used for presigned + public URLs
+	logger         *zap.Logger
+	m              *metrics.Metrics
 }
 
 // NewS3Storage builds an S3-backed StorageX. An empty cfg.Endpoint targets AWS
 // S3; a non-empty one (with path-style addressing) targets MinIO or any
 // S3-compatible store.
+//
+// When cfg.PublicEndpoint is set it is used to sign presigned URLs and to build
+// public URLs, so clients (e.g. a browser or a host-run script) receive a host
+// they can actually reach — while server-side operations keep using the
+// internal cfg.Endpoint. SigV4 signs the Host header, so presigning must happen
+// against the same host the client will connect to.
 func NewS3Storage(ctx context.Context, cfg Config, m *metrics.Metrics, logger *zap.Logger) (StorageX, error) {
 	region := cfg.Region
 	if region == "" {
@@ -58,13 +65,26 @@ func NewS3Storage(ctx context.Context, cfg Config, m *metrics.Metrics, logger *z
 		}
 	})
 
+	// Presign against the public endpoint when one is configured; otherwise
+	// presign against the same internal client (back-compat).
+	publicEndpoint := cfg.PublicEndpoint
+	presignClient := s3.NewPresignClient(client)
+	if publicEndpoint != "" {
+		publicClient := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(publicEndpoint)
+			o.UsePathStyle = true
+		})
+		presignClient = s3.NewPresignClient(publicClient)
+	}
+
 	return &s3Storage{
-		client:   client,
-		presign:  s3.NewPresignClient(client),
-		region:   region,
-		endpoint: cfg.Endpoint,
-		logger:   logger,
-		m:        m,
+		client:         client,
+		presign:        presignClient,
+		region:         region,
+		endpoint:       cfg.Endpoint,
+		publicEndpoint: publicEndpoint,
+		logger:         logger,
+		m:              m,
 	}, nil
 }
 
@@ -220,9 +240,14 @@ func (s *s3Storage) PublicURL(ctx context.Context, bucket, key string) (string, 
 	)
 
 	var url string
-	if s.endpoint != "" {
+	// Prefer the client-facing public endpoint; fall back to the internal one.
+	endpoint := s.publicEndpoint
+	if endpoint == "" {
+		endpoint = s.endpoint
+	}
+	if endpoint != "" {
 		// path-style for MinIO / S3-compatible endpoints
-		url = fmt.Sprintf("%s/%s/%s", strings.TrimRight(s.endpoint, "/"), bucket, key)
+		url = fmt.Sprintf("%s/%s/%s", strings.TrimRight(endpoint, "/"), bucket, key)
 	} else {
 		url = fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", bucket, s.region, key)
 	}

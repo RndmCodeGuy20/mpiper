@@ -73,7 +73,7 @@ Entry: `worker/__main__.py` → `consumer/main.py`
 - `_handle_job` takes a `SELECT … FOR UPDATE` lock, marks the row `in_progress`, calls `process_asset_dispatch`, then marks `done` + acks the stream message. On failure it re-queues (up to `MAX_JOB_ATTEMPTS`).
 - `_recover_stuck_pending` re-adds `pending/in_progress` jobs older than 2 min back to the stream (recovery path, called when no messages available).
 - `worker/processing/processor.py` — `process_asset_dispatch` routes by asset type to `images.py` or `videos.py`.
-- `worker/storage/` — `StorageX` ABC; `GCSStorage` is the concrete impl.
+- `worker/storage/` — `StorageX` ABC; `GCSStorage` and `S3Storage` concrete impls (selected by a factory in `worker/storage/__init__.py`). `S3Storage` mirrors the Go split-endpoint behavior: object I/O uses `endpoint_url`, persisted variant URLs use `public_endpoint_url`.
 - `worker/utils/metrics.py` — Prometheus metrics via `prometheus_client`.
 
 ### Shared concerns
@@ -84,7 +84,7 @@ Entry: `worker/__main__.py` → `consumer/main.py`
 
 **Error types (Go):** `pkg/errors` has typed API errors (`NotFoundError`, `BadRequestError`, `UnauthorizedError`, `ConflictError`, `InternalServerErrorError`) each embedding `*ApiError` (carries `StatusCode`). Handler layer type-asserts on these to set HTTP status. Use `fmt.Errorf("op: %w", err)` for internal wrapping; use `errors.New*` constructors (e.g. `errors.NewNotFoundError`) at the service/handler boundary.
 
-**Storage (`pkg/utils/storagex`):** `StorageX` interface with `PutObject`, `GetObject`, `GeneratePresignedURL`, `PublicURL`, `DeleteObject`. Current impl: `GCSStorage`. S3/MinIO provider types exist in config but are not yet implemented.
+**Storage (`pkg/utils/storagex`):** `StorageX` interface with `PutObject`, `GetObject`, `GeneratePresignedURL`, `PublicURL`, `DeleteObject`. Implementations: `GCSStorage` and `s3Storage` (S3 / S3-compatible MinIO). The S3 impl supports a split endpoint — `Endpoint` (internal/server-side) for object I/O and `PublicEndpoint` (client-facing) for presigned + public URLs; presigning happens against the public endpoint because SigV4 signs the Host header.
 
 **OTel:** Full tracing + metrics on the API side. Go instruments are in `internal/metrics/metrics.go`. Collector config at `observability/otel-collector.yml`; Grafana/Loki/Tempo/Prometheus configs in `observability/`. Python side uses `prometheus_client` (not OTel).
 

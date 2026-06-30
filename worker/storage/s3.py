@@ -21,10 +21,14 @@ class S3Storage(StorageX):
         access_key: str,
         secret_key: str,
         endpoint_url: Optional[str] = None,
+        public_endpoint_url: Optional[str] = None,
     ):
         self.bucket_name = bucket_name
         self.region = region
         self.endpoint_url = endpoint_url or None
+        # Client-facing endpoint used to build persisted variant URLs so they
+        # resolve from the host/browser. Object I/O still uses endpoint_url.
+        self.public_endpoint_url = public_endpoint_url or self.endpoint_url
 
         self.client = boto3.client(
             "s3",
@@ -72,7 +76,7 @@ class S3Storage(StorageX):
             raise
 
     def public_url(self, key: str) -> str:
-        if self.endpoint_url:
+        if self.public_endpoint_url:
             # path-style for MinIO / S3-compatible endpoints
-            return f"{self.endpoint_url.rstrip('/')}/{self.bucket_name}/{key}"
+            return f"{self.public_endpoint_url.rstrip('/')}/{self.bucket_name}/{key}"
         return f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{key}"

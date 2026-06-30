@@ -113,7 +113,8 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB, m *metrics.Metrics) *chi.Mux {
 	r.Use(appMiddleware.SlowRequestMiddleware(logger, 2*time.Second))
 
 	assetRepo := repository.NewAssetRepository(db, logger, m)
-	assetSvc := service.NewAssetService(&cfg.Redis, assetRepo, logger, m)
+	outboxRepo := repository.NewOutboxRepository(db, logger)
+	assetSvc := service.NewAssetService(assetRepo, outboxRepo, logger, m)
 	assetHandler := handler.NewAssetHandler(assetSvc, logger, m)
 
 	// Routes
@@ -154,6 +155,16 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB, m *metrics.Metrics) *chi.Mux {
 		r.Route("/assets", func(r chi.Router) {
 			r.Use(appMiddleware.AuthMiddleware(logger))
 			r.Get("/{assetID}/complete", assetHandler.MarkAssetUploaded)
+		})
+
+		r.Route("/webhooks", func(r chi.Router) {
+			r.Use(appMiddleware.AuthMiddleware(logger))
+			webhookRepo := repository.NewWebhookRepository(db, logger)
+			webhookSvc := service.NewWebhookService(webhookRepo, logger)
+			webhookHandler := handler.NewWebhookHandler(webhookSvc, logger)
+			r.Post("/", webhookHandler.Create)
+			r.Get("/", webhookHandler.List)
+			r.Delete("/{id}", webhookHandler.Delete)
 		})
 	})
 

@@ -54,6 +54,16 @@ type Metrics struct {
 	QueueDepth            metric.Int64ObservableGauge
 	QueueProcessingLag    metric.Float64Histogram
 
+	OutboxPublishedTotal  metric.Int64Counter
+	OutboxPublishFailures metric.Int64Counter
+	OutboxRelayLagSeconds metric.Float64Histogram
+	OutboxPendingGauge    metric.Int64ObservableGauge
+
+	WebhookDeliveryTotal    metric.Int64Counter
+	WebhookDeliveryDuration metric.Float64Histogram
+	WebhookDeliveryFailures metric.Int64Counter
+	WebhookPendingGauge     metric.Int64ObservableGauge
+
 	SystemMemoryUsage     metric.Int64ObservableGauge
 	SystemGoroutineCount  metric.Int64ObservableGauge
 	SystemGCPauseDuration metric.Float64Histogram
@@ -70,6 +80,19 @@ func (m *Metrics) RegisterQueueDepthFunc(fn func(context.Context) (int64, error)
 		o.ObserveInt64(m.QueueDepth, n)
 		return nil
 	}, m.QueueDepth)
+	return err
+}
+
+// RegisterOutboxPendingFunc wires a callback to the OutboxPendingGauge.
+func (m *Metrics) RegisterOutboxPendingFunc(fn func(context.Context) (int64, error)) error {
+	_, err := m.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		n, err := fn(ctx)
+		if err != nil {
+			return err
+		}
+		o.ObserveInt64(m.OutboxPendingGauge, n)
+		return nil
+	}, m.OutboxPendingGauge)
 	return err
 }
 
@@ -145,6 +168,8 @@ func InitMetrics(ctx context.Context, logger *zap.Logger) (*Metrics, func(contex
 	initStorageMetrics(m, meter, logger)
 	initDatabaseMetrics(m, meter, logger)
 	initQueueMetrics(m, meter, logger)
+	initOutboxMetrics(m, meter, logger)
+	initWebhookMetrics(m, meter, logger)
 	initSystemMetrics(m, meter, logger)
 
 	logger.Sugar().Info("OpenTelemetry metrics initialized successfully")
@@ -307,6 +332,30 @@ func initQueueMetrics(m *Metrics, meter metric.Meter, logger *zap.Logger) {
 	}
 }
 
+func initOutboxMetrics(m *Metrics, meter metric.Meter, logger *zap.Logger) {
+	var err error
+	m.OutboxPublishedTotal, err = meter.Int64Counter("outbox.published.total",
+		metric.WithDescription("Total outbox events published to stream"), metric.WithUnit("{event}"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create outbox published counter: %v", err)
+	}
+	m.OutboxPublishFailures, err = meter.Int64Counter("outbox.publish.failures",
+		metric.WithDescription("Total outbox publish failures"), metric.WithUnit("{event}"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create outbox publish failures counter: %v", err)
+	}
+	m.OutboxRelayLagSeconds, err = meter.Float64Histogram("outbox.relay.lag",
+		metric.WithDescription("Age of oldest pending outbox row in seconds"), metric.WithUnit("s"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create outbox relay lag histogram: %v", err)
+	}
+	m.OutboxPendingGauge, err = meter.Int64ObservableGauge("outbox.pending",
+		metric.WithDescription("Number of pending outbox events"), metric.WithUnit("{event}"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create outbox pending gauge: %v", err)
+	}
+}
+
 func initSystemMetrics(m *Metrics, meter metric.Meter, logger *zap.Logger) {
 	var err error
 	var memStats runtime.MemStats
@@ -339,4 +388,41 @@ func initSystemMetrics(m *Metrics, meter metric.Meter, logger *zap.Logger) {
 	if err != nil {
 		logger.Sugar().Fatalf("Failed to create GC pause duration: %v", err)
 	}
+}
+
+func initWebhookMetrics(m *Metrics, meter metric.Meter, logger *zap.Logger) {
+	var err error
+	m.WebhookDeliveryTotal, err = meter.Int64Counter("webhook.delivery.total",
+		metric.WithDescription("Total webhook deliveries attempted"), metric.WithUnit("{delivery}"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create webhook delivery counter: %v", err)
+	}
+	m.WebhookDeliveryDuration, err = meter.Float64Histogram("webhook.delivery.duration",
+		metric.WithDescription("Duration of webhook delivery HTTP calls"), metric.WithUnit("s"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create webhook delivery duration: %v", err)
+	}
+	m.WebhookDeliveryFailures, err = meter.Int64Counter("webhook.delivery.failures",
+		metric.WithDescription("Total webhook delivery failures"), metric.WithUnit("{delivery}"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create webhook delivery failures counter: %v", err)
+	}
+	m.WebhookPendingGauge, err = meter.Int64ObservableGauge("webhook.pending",
+		metric.WithDescription("Number of pending webhook deliveries"), metric.WithUnit("{delivery}"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create webhook pending gauge: %v", err)
+	}
+}
+
+// RegisterWebhookPendingFunc wires a callback to the WebhookPendingGauge.
+func (m *Metrics) RegisterWebhookPendingFunc(fn func(context.Context) (int64, error)) error {
+	_, err := m.meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		n, err := fn(ctx)
+		if err != nil {
+			return err
+		}
+		o.ObserveInt64(m.WebhookPendingGauge, n)
+		return nil
+	}, m.WebhookPendingGauge)
+	return err
 }

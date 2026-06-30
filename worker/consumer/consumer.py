@@ -38,6 +38,7 @@ from worker.consumer.db import PgPool
 from worker.processing.processor import RetryableException, process_asset_dispatch
 from worker.storage.base import StorageX
 from worker.utils.logger import get_logger
+from worker.webhooks import insert_webhook_deliveries
 
 logger = get_logger(__name__)
 
@@ -81,7 +82,13 @@ class Consumer:
             Configuration object with stream_name and consumer_group.
         """
         self.pg = pg_pool
-        self.redis = redis.Redis.from_url(redis_url, decode_responses=True)
+        self.redis = redis.Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            retry_on_timeout=True,
+            socket_connect_timeout=5,
+            socket_timeout=10,
+        )
         self.storage = storage
         self.cfg = cfg
 
@@ -135,13 +142,16 @@ class Consumer:
         self._maybe_recover()
 
         # Read one message for this consumer (blocking short period)
-        resp = self.redis.xreadgroup(
-            groupname=self.cfg.consumer_group,
-            consumername=consumer_name,
-            streams={self.cfg.stream_name: ">"},
-            count=1,
-            block=5000,
-        )
+        try:
+            resp = self.redis.xreadgroup(
+                groupname=self.cfg.consumer_group,
+                consumername=consumer_name,
+                streams={self.cfg.stream_name: ">"},
+                count=1,
+                block=5000,
+            )
+        except (TimeoutError, redis.exceptions.TimeoutError):
+            return False
 
         if not resp:
             return False
@@ -219,6 +229,7 @@ class Consumer:
                 "UPDATE jobs SET status = 'in_progress', attempts = attempts + 1, updated_at = now() WHERE job_id = %s",
                 (str(job_id),),
             )
+            insert_webhook_deliveries(cur, asset_id, job_id, "job.started")
             conn.commit()
 
         # Run the processing outside the DB transaction.
@@ -250,6 +261,7 @@ class Consumer:
                         "UPDATE assets SET status = 'failed', error_reason = %s, updated_at = now() WHERE asset_id = %s",
                         (str(exc), asset_id),
                     )
+                    insert_webhook_deliveries(cur, asset_id, job_id, "job.failed")
                 else:
                     cur.execute(
                         "UPDATE jobs SET status = 'pending', last_error = %s, updated_at = now() WHERE job_id = %s",
@@ -270,6 +282,7 @@ class Consumer:
                 "UPDATE assets SET status = 'ready', updated_at = now() WHERE asset_id = %s",
                 (asset_id,),
             )
+            insert_webhook_deliveries(cur, asset_id, job_id, "job.done")
             conn.commit()
 
         # Acknowledge the Redis stream message.

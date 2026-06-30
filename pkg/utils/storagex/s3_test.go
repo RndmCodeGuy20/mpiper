@@ -91,6 +91,88 @@ func TestS3StorageRoundTrip(t *testing.T) {
 	}
 }
 
+// TestS3PresignAndPublicURLEndpoints verifies the split-endpoint behavior
+// without needing a live S3/MinIO server: presigning signs locally and
+// PublicURL is pure string construction.
+func TestS3PresignAndPublicURLEndpoints(t *testing.T) {
+	ctx := context.Background()
+	const (
+		internal = "http://minio:9000"
+		public   = "http://localhost:9000"
+		bucket   = "mpiper"
+		key      = "media/raw/abc"
+	)
+
+	t.Run("public endpoint set: presign + PublicURL use public host", func(t *testing.T) {
+		st, err := NewS3Storage(ctx, Config{
+			Provider:        S3Provider,
+			Region:          "us-east-1",
+			Endpoint:        internal,
+			PublicEndpoint:  public,
+			Bucket:          bucket,
+			AccessKeyID:     "minioadmin",
+			SecretAccessKey: "minioadmin",
+		}, nil, zap.NewNop())
+		if err != nil {
+			t.Fatalf("NewS3Storage: %v", err)
+		}
+
+		url, err := st.GeneratePresignedURL(ctx, bucket, key, &PresignedURLOptions{Method: "PUT", ContentType: "image/jpeg", ExpiresInSeconds: 300})
+		if err != nil {
+			t.Fatalf("GeneratePresignedURL: %v", err)
+		}
+		if !strings.HasPrefix(url, public) {
+			t.Errorf("presigned url should target public host %q, got %s", public, url)
+		}
+		if strings.Contains(url, "minio:9000") {
+			t.Errorf("presigned url should not contain internal host, got %s", url)
+		}
+		if !strings.Contains(url, "X-Amz-Signature") {
+			t.Errorf("presigned url missing signature: %s", url)
+		}
+
+		pub, err := st.PublicURL(ctx, bucket, key)
+		if err != nil {
+			t.Fatalf("PublicURL: %v", err)
+		}
+		want := public + "/" + bucket + "/" + key
+		if pub != want {
+			t.Errorf("PublicURL = %q, want %q", pub, want)
+		}
+	})
+
+	t.Run("public endpoint unset: falls back to internal host (back-compat)", func(t *testing.T) {
+		st, err := NewS3Storage(ctx, Config{
+			Provider:        S3Provider,
+			Region:          "us-east-1",
+			Endpoint:        internal,
+			Bucket:          bucket,
+			AccessKeyID:     "minioadmin",
+			SecretAccessKey: "minioadmin",
+		}, nil, zap.NewNop())
+		if err != nil {
+			t.Fatalf("NewS3Storage: %v", err)
+		}
+
+		url, err := st.GeneratePresignedURL(ctx, bucket, key, &PresignedURLOptions{Method: "PUT", ExpiresInSeconds: 300})
+		if err != nil {
+			t.Fatalf("GeneratePresignedURL: %v", err)
+		}
+		if !strings.HasPrefix(url, internal) {
+			t.Errorf("presigned url should target internal host %q, got %s", internal, url)
+		}
+
+		pub, err := st.PublicURL(ctx, bucket, key)
+		if err != nil {
+			t.Fatalf("PublicURL: %v", err)
+		}
+		want := internal + "/" + bucket + "/" + key
+		if pub != want {
+			t.Errorf("PublicURL = %q, want %q", pub, want)
+		}
+	})
+}
+
 func createTestBucket(t *testing.T, ctx context.Context, cfg Config, bucket string) {
 	t.Helper()
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,

@@ -16,5 +16,6 @@ def get_storage(cfg: WorkerConfig) -> StorageX:
             access_key=b.access_key,
             secret_key=b.secret_key,
             endpoint_url=b.endpoint_url,
+            public_endpoint_url=b.public_endpoint_url,
         )
     raise ValueError(f"unknown storage provider: {b.provider}")

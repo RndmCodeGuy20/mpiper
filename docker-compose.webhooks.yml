@@ -1,0 +1,17 @@
+# docker-compose.webhooks.yml
+# Overlay for webhook dev-testing. Run with:
+#   docker compose -f docker-compose.yml -f docker-compose.webhooks.yml up
+#
+# Adds a lightweight webhook receiver that logs all incoming POST requests.
+
+services:
+  webhook-receiver:
+    image: mendhak/http-https-echo:latest
+    container_name: mpiper-webhook-receiver
+    ports:
+      - "8888:8080"
+    environment:
+      HTTP_PORT: 8080
+    networks:
+      - mpiper_net
+    restart: unless-stopped
