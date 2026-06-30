@@ -1,0 +1,126 @@
+# ============================================================================
+# MPiper — SLO recording rules (Track 3, Phase 3)
+#
+# Encodes the SLIs from track-03-observability-and-load.md §4.2 as recording
+# rules so each renders directly on a dashboard against its target.
+#
+# Metric naming convention
+# -------------------------
+# App telemetry is OTLP → the collector's Prometheus exporter, which is
+# configured with `namespace: mpiper` (see observability/otel-collector.yml).
+# OTel instrument names have dots replaced by underscores and the unit appended:
+#
+#   Go API   http.server.request.duration (s)  -> mpiper_http_server_request_duration_seconds_{bucket,sum,count}
+#   Go API   asset.processing.success (counter) -> mpiper_asset_processing_success_total
+#   Worker   mpiper.job.processing.success      -> mpiper_mpiper_job_processing_success_total
+#            (worker instruments already carry a `mpiper.` prefix, so the
+#             collector namespace yields a double `mpiper_mpiper_` prefix)
+#
+# If your collector build sets `add_metric_suffixes: false` or a different
+# namespace, adjust the series names below. Validate with:
+#   promtool check rules observability/prometheus.rules.yml
+# and against live series in Prometheus → Status → Targets after a load run.
+# ============================================================================
+
+groups:
+  - name: mpiper_slo
+    interval: 15s
+    rules:
+      # --- Presign latency: p95 of POST /api/v1/storage/presign  (target < 150ms)
+      - record: sli:presign_latency_seconds:p95
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(mpiper_http_server_request_duration_seconds_bucket{http_route="/api/v1/storage/presign"}[5m])
+            )
+          )
+
+      # --- API overall request latency p95 per route (RED "Duration")
+      - record: sli:http_request_latency_seconds:p95
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum by (le, http_route) (
+              rate(mpiper_http_server_request_duration_seconds_bucket[5m])
+            )
+          )
+
+      # --- API error ratio per route (RED "Errors"): 5xx / all
+      - record: sli:http_error_ratio:ratio_rate5m
+        expr: >
+          sum by (http_route) (
+            rate(mpiper_http_server_request_count_total{http_status_code=~"5.."}[5m])
+          )
+          /
+          clamp_min(
+            sum by (http_route) (rate(mpiper_http_server_request_count_total[5m])),
+            1
+          )
+
+      # --- Image ready latency: p95 of worker asset processing for images.
+      # Server-side processing proxy for complete -> ready; queue wait is added
+      # on top and is best read from the trace waterfall (enqueue -> consume).
+      - record: sli:image_ready_latency_seconds:p95
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(mpiper_mpiper_asset_processing_duration_seconds_bucket{asset_type="image"}[5m])
+            )
+          )
+
+      # --- Video ready latency: p95 of worker asset processing for videos  (target < 60s)
+      - record: sli:video_ready_latency_seconds:p95
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(mpiper_mpiper_asset_processing_duration_seconds_bucket{asset_type="video"}[5m])
+            )
+          )
+
+      # --- Queue wait: p95 of the producer-side processing lag histogram.
+      # The authoritative enqueue -> consume gap is visible per-asset in Tempo;
+      # this metric approximates the publish-side contribution.
+      - record: sli:queue_wait_seconds:p95
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(mpiper_queue_processing_lag_seconds_bucket[5m])
+            )
+          )
+
+      # --- Job success rate: done / (done + failed)  (target > 99%)
+      # `or vector(0)` guards the empty-vector pitfall: with zero failures the
+      # failed series does not exist, and a bare A + B would yield no result.
+      - record: sli:job_success_ratio:ratio_rate5m
+        expr: >
+          (sum(rate(mpiper_mpiper_job_processing_success_total[5m])) or vector(0))
+          /
+          clamp_min(
+            (sum(rate(mpiper_mpiper_job_processing_success_total[5m])) or vector(0))
+            + (sum(rate(mpiper_mpiper_job_processing_failed_total[5m])) or vector(0)),
+            1
+          )
+
+      # --- Webhook delivery latency: p95 of delivery HTTP calls  (target < 10s)
+      - record: sli:webhook_delivery_latency_seconds:p95
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(mpiper_webhook_delivery_duration_seconds_bucket[5m])
+            )
+          )
+
+      # --- Queue health snapshots (gauges already exported by the app)
+      - record: sli:queue_depth:current
+        expr: max(mpiper_queue_depth)
+
+      - record: sli:outbox_pending:current
+        expr: max(mpiper_outbox_pending)
+
+      - record: sli:webhook_pending:current
+        expr: max(mpiper_webhook_pending)

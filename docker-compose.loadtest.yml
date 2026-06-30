@@ -1,0 +1,54 @@
+# ============================================================================
+# MPiper — Load-test overlay (Track 3, Phase 0)
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.observability.yml \
+#     -f docker-compose.loadtest.yml \
+#     up -d --build
+#
+# Why this exists
+# ---------------
+# Local load-test results are only interpretable when resources are PINNED, so
+# "the worker is the bottleneck" is a stable, observable fact rather than
+# something that moves run to run depending on spare laptop cores. This overlay:
+#
+#   1. Caps CPU/memory on `api` and `worker` via `deploy.resources.limits`
+#      (honoured by `docker compose up` in Compose v2 — no swarm needed).
+#   2. Forces TRACE_SAMPLING_RATE=1.0 so every asset produces a full trace.
+#
+# The worker is intentionally pinned to a single CPU: it is single-threaded
+# today (Track 1), and pinning makes that saturation visible and reproducible.
+# Document the limits alongside every experiment — changing them changes ffmpeg
+# thread behaviour, which is the point, but it must be recorded for comparison.
+# ============================================================================
+
+name: mpiper
+
+services:
+  api:
+    environment:
+      # Full sampling locally — never lose a trace to the 0.1 code default.
+      TRACE_SAMPLING_RATE: "1.0"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+  worker:
+    environment:
+      # Full sampling locally; matches the API so the whole trace is captured.
+      TRACE_SAMPLING_RATE: "1.0"
+    deploy:
+      resources:
+        limits:
+          # Single CPU on purpose — surfaces the single-threaded bottleneck.
+          cpus: "1.0"
+          memory: 1024M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
