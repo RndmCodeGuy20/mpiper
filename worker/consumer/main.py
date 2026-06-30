@@ -10,6 +10,7 @@ from worker.consumer.db import PgPool
 from worker.consumer.migrations import run_migrations
 from worker.storage import get_storage
 from worker.utils import metrics as worker_metrics
+from worker.utils import tracing as worker_tracing
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,33 @@ def main():
     logger.info("Starting worker consumer...")
 
     cfg = get_config()
+
+    # Initialise telemetry before anything else so startup is observable.
+    # NOTE: init_metrics() was previously never called — worker OTel metrics
+    # were defined but never wired up. We initialise both tracing and metrics
+    # here from the same OtelConfig so they share endpoint/resource/lifecycle.
+    otel = cfg.otel
+    try:
+        worker_tracing.init_tracing(
+            service_name=otel.service_name,
+            service_version=otel.service_version,
+            endpoint=otel.endpoint,
+            deployment_env=otel.deployment_env,
+            instance_id=otel.instance_id,
+            tls_insecure=otel.tls_insecure,
+        )
+        worker_metrics.init_metrics(
+            service_name=otel.service_name,
+            service_version=otel.service_version,
+            endpoint=otel.endpoint,
+            deployment_env=otel.deployment_env,
+            instance_id=otel.instance_id,
+            tls_insecure=otel.tls_insecure,
+        )
+    except Exception:
+        # Telemetry must never prevent the worker from processing jobs.
+        logger.exception("failed to initialise telemetry; continuing without it")
+
     storage = get_storage(cfg)
     password = quote_plus(cfg.database.password)
 
@@ -60,8 +88,9 @@ def main():
             time.sleep(1)
 
     logger.info("exiting")
-    
-    # Shutdown metrics on exit
+
+    # Shutdown telemetry on exit (flush pending spans + metrics).
+    worker_tracing.shutdown_tracing()
     worker_metrics.shutdown_metrics()
 
 

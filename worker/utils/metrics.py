@@ -18,6 +18,10 @@ from opentelemetry import metrics
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.metrics.view import (
+    ExplicitBucketHistogramAggregation,
+    View,
+)
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION, DEPLOYMENT_ENVIRONMENT, SERVICE_INSTANCE_ID
 
 from worker.utils.logger import get_logger
@@ -97,8 +101,27 @@ def init_metrics(
     # Create metric reader with 15-second export interval
     reader = PeriodicExportingMetricReader(exporter, export_interval_millis=15000)
 
+    # Finer histogram buckets for duration metrics. The SDK default buckets are
+    # too coarse for sub-second work (everything lands in [0,5) so p95 reads
+    # ~4.75s), which makes the image/job latency SLIs meaningless. These cover
+    # tens-of-ms (images) through tens-of-seconds (video transcode).
+    _duration_buckets = [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]
+    duration_views = [
+        View(
+            instrument_name=name,
+            aggregation=ExplicitBucketHistogramAggregation(_duration_buckets),
+        )
+        for name in (
+            "mpiper.asset.processing.duration",
+            "mpiper.job.processing.duration",
+            "mpiper.queue.processing.duration",
+        )
+    ]
+
     # Create meter provider
-    provider = MeterProvider(resource=resource, metric_readers=[reader])
+    provider = MeterProvider(
+        resource=resource, metric_readers=[reader], views=duration_views
+    )
     metrics.set_meter_provider(provider)
 
     # Get meter
@@ -218,6 +241,40 @@ def init_metrics(
     )
 
     logger.info("OpenTelemetry metrics initialized successfully")
+
+
+def record_consume() -> None:
+    """Count one consumed queue message (no-op until init_metrics runs)."""
+    if queue_message_consumed is not None:
+        queue_message_consumed.add(1)
+
+
+def record_job(success: bool, duration_seconds: float) -> None:
+    """Record job-level outcome + duration. Safe before init (no-op)."""
+    if job_processing_total is not None:
+        job_processing_total.add(1)
+    if success and job_processing_success is not None:
+        job_processing_success.add(1)
+    if (not success) and job_processing_failed is not None:
+        job_processing_failed.add(1)
+    if job_processing_duration is not None:
+        job_processing_duration.record(duration_seconds)
+
+
+def record_asset(asset_type: str, duration_seconds: float, success: bool) -> None:
+    """Record asset processing outcome + duration, labelled by type only.
+
+    asset_type is low-cardinality (image/video); asset_id must never be a label.
+    """
+    attrs = {"asset_type": asset_type or "unknown"}
+    if asset_processing_total is not None:
+        asset_processing_total.add(1, attrs)
+    if success and asset_processing_success is not None:
+        asset_processing_success.add(1, attrs)
+    if (not success) and asset_processing_failed is not None:
+        asset_processing_failed.add(1, attrs)
+    if asset_processing_duration is not None:
+        asset_processing_duration.record(duration_seconds, attrs)
 
 
 def get_meter() -> Optional[metrics.Meter]:

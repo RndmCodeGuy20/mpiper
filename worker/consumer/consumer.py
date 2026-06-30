@@ -28,16 +28,21 @@ Notes about external expectations:
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from typing import Dict
 
 import redis
 from redis.exceptions import ResponseError
+from opentelemetry import trace
+from opentelemetry.propagate import extract
 
 from worker.consumer.config import WorkerConfig
 from worker.consumer.db import PgPool
 from worker.processing.processor import RetryableException, process_asset_dispatch
 from worker.storage.base import StorageX
 from worker.utils.logger import get_logger
+from worker.utils.tracing import get_tracer
+from worker.utils import metrics as wm
 from worker.webhooks import insert_webhook_deliveries
 
 logger = get_logger(__name__)
@@ -159,6 +164,7 @@ class Consumer:
         # Response format: [(stream_name, [(msg_id, {field: value}), ...])]
         _, messages = resp[0]
         msg_id, fields = messages[0]
+        wm.record_consume()
 
         try:
             # Normalize fields to a dict
@@ -180,20 +186,68 @@ class Consumer:
             job_id = payload.get("job_id")
             asset_id = payload.get("asset_id")
 
-            if job_id:
-                self._handle_job(job_id, msg_id)
-            elif asset_id:
-                self._handle_asset_message(asset_id, msg_id)
-            else:
-                logger.error("message missing job_id and asset_id: %s", payload)
-                # Acknowledge to remove the malformed message from the stream.
-                self.redis.xack(self.cfg.stream_name, self.cfg.consumer_group, msg_id)
+            # Extract the producer trace context (injected by the Go relay) and
+            # continue the trace here. traceparent may be a top-level stream
+            # field or have been merged in from `body` above. We start the
+            # consume span as a CHILD of the producer context (keeps the Tempo
+            # waterfall readable) AND attach a link to it — a link is the correct
+            # primitive for queue fan-in, where one consumer may join many
+            # producers. The gap between the producer's enqueue span and this
+            # span is the queue wait time.
+            with self._consume_span(payload, msg_id, job_id, asset_id):
+                if job_id:
+                    self._handle_job(job_id, msg_id)
+                elif asset_id:
+                    self._handle_asset_message(asset_id, msg_id)
+                else:
+                    logger.error("message missing job_id and asset_id: %s", payload)
+                    # Acknowledge to remove the malformed message from the stream.
+                    self.redis.xack(
+                        self.cfg.stream_name, self.cfg.consumer_group, msg_id
+                    )
         except Exception:
             logger.exception("unhandled exception while processing message %s", msg_id)
             # Do not ack the message so it remains in the pending entries list
             # for recovery/retry later.
 
         return True
+
+    def _consume_span(self, payload, msg_id, job_id, asset_id):
+        """Start the worker.consume span continuing the producer trace.
+
+        Returns a context manager. When tracing is not initialised (telemetry
+        failed at startup) this is a no-op so message processing is unaffected.
+        """
+        tracer = get_tracer()
+        if tracer is None:
+            return nullcontext()
+
+        carrier = {
+            k: payload[k]
+            for k in ("traceparent", "tracestate", "baggage")
+            if k in payload
+        }
+        parent_ctx = extract(carrier)
+        producer_sc = trace.get_current_span(parent_ctx).get_span_context()
+        links = [trace.Link(producer_sc)] if producer_sc.is_valid else None
+
+        attrs = {
+            "messaging.system": "redis",
+            "messaging.destination.name": self.cfg.stream_name,
+            "messaging.message.id": msg_id,
+        }
+        if job_id:
+            attrs["job_id"] = str(job_id)
+        if asset_id:
+            attrs["asset_id"] = str(asset_id)
+
+        return tracer.start_as_current_span(
+            "worker.consume",
+            context=parent_ctx,
+            kind=trace.SpanKind.CONSUMER,
+            links=links,
+            attributes=attrs,
+        )
 
     def _handle_job(self, job_id: int, msg_id: str) -> None:
         """Load the job row, mark it in-progress, run processing, and finalize.
@@ -233,10 +287,12 @@ class Consumer:
             conn.commit()
 
         # Run the processing outside the DB transaction.
+        job_start = time.time()
         try:
             process_asset_dispatch(asset_id, self.pg, self.storage, self.cfg)
         except Exception as exc:
             logger.exception("processing failed for job=%s asset=%s", job_id, asset_id)
+            wm.record_job(success=False, duration_seconds=time.time() - job_start)
 
             with self.pg.get_pg_conn() as conn:
                 cur = conn.cursor()
@@ -284,6 +340,8 @@ class Consumer:
             )
             insert_webhook_deliveries(cur, asset_id, job_id, "job.done")
             conn.commit()
+
+        wm.record_job(success=True, duration_seconds=time.time() - job_start)
 
         # Acknowledge the Redis stream message.
         self.redis.xack(self.cfg.stream_name, self.cfg.consumer_group, msg_id)
