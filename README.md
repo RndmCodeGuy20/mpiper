@@ -10,13 +10,14 @@ A lightweight, scalable media processing pipeline built with Go and Python. MPip
 ## 🌟 Features
 
 - **RESTful API Server** - High-performance Go server built with Chi router
-- **Asynchronous Processing** - Redis Streams job queue for scalable media processing
+- **Concurrent Processing** - Redis Streams job queue with a **bounded worker pool** (`MAX_CONCURRENT_JOBS`) for parallel media processing — ~2.4× throughput vs single-threaded in load tests
+- **Resilient delivery** - **`XAUTOCLAIM`** consumer-group recovery reclaims messages from dead workers, and poison/over-retried messages are routed to a **dead-letter stream** (`media:jobs:dlq`) instead of being dropped
 - **Pluggable Storage** - GCS and S3/MinIO (any S3-compatible store) behind a single provider abstraction, selected by config
 - **Image Processing** - Automatic generation of optimized, content-addressed image variants (resize, re-encode, format conversion)
 - **Video Processing** - Poster generation, 720p transcode, and preview clips
 - **Database-Backed** - PostgreSQL as the durable source of truth for assets, variants, and jobs
-- **Webhooks** - Registration and delivery tracking tables for outbound event notifications
-- **Observability** - OpenTelemetry tracing + metrics on the API, Prometheus metrics on the worker, with a bundled Grafana/Tempo/Loki/Prometheus stack
+- **Webhooks** - Registration + **concurrent** signed delivery (`WEBHOOK_CONCURRENCY`) with HMAC signatures, exponential-backoff retries, and delivery tracking
+- **Observability** - OpenTelemetry tracing + metrics on the API, Prometheus metrics on the worker, with a bundled Grafana/Tempo/Loki/Prometheus stack and a host-run k6 load harness
 - **Docker & Kubernetes Ready** - Multi-stage images and manifests for containerized deployment
 
 ## 🏗️ Architecture
@@ -46,9 +47,14 @@ Two-service pipeline communicating over **Redis Streams** (`media:jobs`). Postgr
 2. Go server creates the asset + job and returns a presigned upload URL
 3. Client uploads the raw file directly to object storage
 4. Client marks the asset uploaded; the job is enqueued on the Redis stream
-5. Python worker consumes the job, processes media (resize, transcode, optimize)
+5. The Python worker consumes jobs **concurrently** (a bounded pool of `MAX_CONCURRENT_JOBS`), processing media (resize, transcode, optimize)
 6. Variants are written back to object storage (deduplicated by content hash)
 7. Database is updated with asset status and variant metadata
+
+**Resilience:** the worker uses Redis Streams consumer-group semantics — each
+message is acked only after its job succeeds, dead-consumer messages are reclaimed
+with `XAUTOCLAIM`, and poison/over-retried messages are moved to a dead-letter
+stream (`media:jobs:dlq`) for inspection/replay rather than being dropped.
 
 ## 📋 Prerequisites
 
@@ -117,8 +123,22 @@ S3_PUBLIC_ENDPOINT_URL=http://localhost:9000
 # Worker
 STREAM_NAME=media:jobs
 JOB_POLL_INTERVAL=1
-MAX_CONCURRENT_JOBS=5
+MAX_CONCURRENT_JOBS=5         # bounded worker-pool size; set ≈ CPU cores per worker
+RECOVERY_MIN_IDLE_MS=120000  # idle threshold before XAUTOCLAIM reclaims a stuck message
+STREAM_DLQ_NAME=media:jobs:dlq
+SHUTDOWN_DRAIN_TIMEOUT=30     # seconds to drain in-flight jobs on SIGTERM
+
+# Webhooks
+WEBHOOK_CONCURRENCY=10        # concurrent signed deliveries per dispatcher tick
+WEBHOOK_BATCH_SIZE=50
+WEBHOOK_POLL_INTERVAL=2s
+WEBHOOK_MAX_ATTEMPTS=5
 ```
+
+> **Tuning `MAX_CONCURRENT_JOBS`:** media work is partly CPU-bound (Pillow/ffmpeg),
+> so set it close to the worker's CPU-core count. Going much higher *oversubscribes*
+> the cores and reduces throughput — load tests showed `mcj=8` on 4 cores was slower
+> than `mcj=4`. Size worker memory to the pool, not the single-threaded baseline.
 
 > The worker reads the same `S3_*` variables as the Go server (falling back to `BUCKET_*`), so one `.env` drives both services.
 
@@ -299,8 +319,9 @@ Register an endpoint to receive processing-lifecycle events.
 
 Deliveries are signed: each POST carries an `X-Webhook-Signature: sha256=<hmac>`
 header computed over the JSON body using your registration `secret` (stored
-encrypted at rest). A background dispatcher delivers pending events with
-exponential-backoff retries and tracks them in the `webhook_deliveries` table.
+encrypted at rest). A background dispatcher delivers pending events **concurrently**
+(bounded by `WEBHOOK_CONCURRENCY`) with exponential-backoff retries and tracks them
+in the `webhook_deliveries` table.
 
 ```bash
 curl -X POST http://localhost:5010/api/v1/webhooks \
@@ -359,7 +380,7 @@ mpiper/
 │   └── utils/
 │       └── storagex/    # Storage abstraction (GCS, S3/MinIO)
 ├── worker/
-│   ├── consumer/        # Redis Streams consumer + config
+│   ├── consumer/        # Redis Streams consumer (bounded pool, XAUTOCLAIM recovery, DLQ) + config
 │   ├── processing/      # Image/video processing
 │   ├── storage/         # Storage adapters (base ABC, GCS, S3) + factory
 │   └── utils/           # Worker utilities (metrics)
@@ -477,6 +498,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [x] Support for AWS S3 / MinIO storage
 - [x] Webhook delivery with HMAC signing + retry tracking
 - [x] Video transcoding with FFmpeg (poster, 720p, preview)
+- [x] Concurrent worker pool (`MAX_CONCURRENT_JOBS`) — ~2.4× throughput
+- [x] `XAUTOCLAIM` stream recovery + dead-letter stream for poison messages
+- [x] Concurrent webhook delivery (`WEBHOOK_CONCURRENCY`)
+- [x] End-to-end OpenTelemetry tracing, SLOs, Grafana dashboards + k6 load harness
+- [ ] Queue-depth autoscaling (KEDA) — *next*
 - [ ] Support for Azure Blob Storage
 - [ ] Admin dashboard
 - [ ] Batch processing API
