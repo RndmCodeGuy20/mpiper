@@ -1,0 +1,58 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "id": null,
+  "uid": "mpiper-queue-health",
+  "title": "MPiper — Queue Health",
+  "tags": ["mpiper", "track-3", "queue"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "time": { "from": "now-30m", "to": "now" },
+  "refresh": "10s",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Stream length (queue depth)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "max(mpiper_queue_depth)", "legendFormat": "queue depth" } ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Publish vs consume rate (msg/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(mpiper_queue_message_published_total[5m]))", "legendFormat": "published/s" },
+        { "refId": "B", "expr": "sum(rate(mpiper_mpiper_queue_message_consumed_total[5m]))", "legendFormat": "consumed/s" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Queue wait p95 (publish-side proxy; authoritative in Tempo)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sli:queue_wait_seconds:p95", "legendFormat": "queue wait p95" } ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Webhook delivery p95 (SLO < 10s) + pending",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sli:webhook_delivery_latency_seconds:p95", "legendFormat": "delivery p95" },
+        { "refId": "B", "expr": "sli:webhook_pending:current", "legendFormat": "pending (count)" }
+      ]
+    }
+  ]
+}
