@@ -144,7 +144,8 @@ func main() {
 		MaxAttempts:   cfg.Webhook.MaxAttempts,
 		EncryptionKey: cfg.EncryptionKey,
 		Retention:     cfg.Webhook.Retention,
-	})
+		Concurrency:   cfg.Webhook.Concurrency,
+	}, m)
 	go webhookDispatcher.Start(serverCtx)
 	go webhookDispatcher.StartCleanup(serverCtx)
 

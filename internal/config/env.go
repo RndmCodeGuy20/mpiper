@@ -94,6 +94,7 @@ type WebhookConfig struct {
 	Timeout      time.Duration
 	MaxAttempts  int
 	Retention    time.Duration
+	Concurrency  int
 }
 
 type EnvConfig struct {
@@ -258,6 +259,12 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 			webhookRetention = d
 		}
 	}
+	webhookConcurrency := 10
+	if raw := os.Getenv("WEBHOOK_CONCURRENCY"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			webhookConcurrency = n
+		}
+	}
 
 	return EnvConfig{
 		Environment: env,
@@ -316,6 +323,7 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 			Timeout:      webhookTimeout,
 			MaxAttempts:  webhookMaxAttempts,
 			Retention:    webhookRetention,
+			Concurrency:  webhookConcurrency,
 		},
 	}, nil
 }
