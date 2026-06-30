@@ -121,7 +121,6 @@ def check_for_duplicate(
                     (AssetStatus.READY.value, canonical_id, new_asset_id)
                 )
 
-            conn.commit()
             return DedupResult.DUPLICATE_READY
 
 
@@ -166,7 +165,6 @@ def process_asset_dispatch(
                 "UPDATE assets SET status = %s WHERE asset_id = %s",
                 (AssetStatus.PROCESSING.value, asset_id)
             )
-            conn.commit()
 
         # Download raw file
         raw_key = f"media/raw/{asset_id}"

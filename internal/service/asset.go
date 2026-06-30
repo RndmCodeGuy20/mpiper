@@ -52,6 +52,7 @@ func NewAssetService(assetRepo repository.AssetRepository, outboxRepo repository
 		Bucket:            bucket,
 		Region:            storeCfg.S3.Region,
 		Endpoint:          storeCfg.S3.EndpointURL,
+		PublicEndpoint:    storeCfg.S3.PublicEndpointURL,
 		AccessKeyID:       storeCfg.S3.AccessKeyID,
 		SecretAccessKey:   storeCfg.S3.SecretAccessKey,
 		GCPServiceAccount: storeCfg.GCS.SAPath,
@@ -276,10 +277,10 @@ func (s *assetService) MarkAssetUploaded(ctx context.Context, assetID uuid.UUID)
 
 	// Insert job.starting webhook deliveries for matching registrations (same tx).
 	webhookPayload, _ := json.Marshal(map[string]interface{}{
-		"event":    "job.starting",
-		"asset_id": assetID.String(),
-		"job_id":   *jobID,
-		"status":   "starting",
+		"event":     "job.starting",
+		"asset_id":  assetID.String(),
+		"job_id":    *jobID,
+		"status":    "starting",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 	_, _ = tx.ExecContext(ctxTx,

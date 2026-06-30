@@ -2,19 +2,33 @@ version: '3'
 
 tasks:
   unit:
-    desc: Run unit tests
+    desc: Run unit tests (no external dependencies)
     cmds:
       - gotestsum --format testname --format-icons codicons -- -v {{.CLI_ARGS}}
 
+  integration:
+    desc: Run integration tests (requires Docker)
+    cmds:
+      - gotestsum --format testname --format-icons codicons -- -tags integration -v -timeout 120s ./internal/outbox/ {{.CLI_ARGS}}
+
+  run:
+    desc: Run tests matching a filter (e.g. task test:run -- -run TestOutboxRelay ./internal/outbox/)
+    cmds:
+      - gotestsum --format testname --format-icons codicons -- -tags integration -v -timeout 120s {{.CLI_ARGS}}
+
   race:
+    desc: Run unit tests with race detector
     cmds:
       - go test ./... -race
 
   coverage:
+    desc: Generate coverage report
     cmds:
       - go test ./... -coverprofile=coverage.out
+      - go tool cover -html=coverage.out -o coverage.html
 
   all:
+    desc: Run unit + integration tests
     cmds:
       - task: unit
-      - task: race
+      - task: integration

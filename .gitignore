@@ -121,3 +121,5 @@ API_DOCUMENTATION.md
 .env.local
 .secrets/
 docker-compose.override.yml
+
+.pytest_cache/

@@ -37,6 +37,11 @@ services:
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin
       S3_ENDPOINT_URL: http://minio:9000
+      # Client-facing endpoint baked into presigned + public URLs. Internal
+      # services reach MinIO at minio:9000, but host clients (and the demo
+      # script) must use the published localhost:9000. SigV4 signs the Host
+      # header, so presigning has to target the host the client will connect to.
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
       # Always apply migrations on first run; override in a compose override file.
       AUTO_MIGRATE: "true"
     ports:
@@ -80,6 +85,9 @@ services:
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin
       S3_ENDPOINT_URL: http://minio:9000
+      # Variant URLs persisted to the DB use this client-facing endpoint so they
+      # are reachable from the host/browser; actual object I/O uses minio:9000.
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
       AUTO_MIGRATE: "false"
     depends_on:
       api:

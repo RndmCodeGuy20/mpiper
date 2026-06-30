@@ -66,7 +66,12 @@ type S3Config struct {
 	Region          string
 	AccessKeyID     string
 	SecretAccessKey string
-	EndpointURL     string // optional — set for MinIO / S3-compatible stores
+	EndpointURL     string // optional — internal/server-side endpoint for MinIO / S3-compatible stores
+	// PublicEndpointURL is the client-facing endpoint used to sign presigned
+	// URLs and build public URLs (e.g. http://localhost:9000). When empty,
+	// EndpointURL is used for both. Set this when internal services reach the
+	// store by a private host (e.g. minio:9000) that external clients cannot.
+	PublicEndpointURL string
 }
 
 type StorageConfig struct {
@@ -286,11 +291,12 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 				SAPath: os.Getenv("GCS_SA_PATH"),
 			},
 			S3: S3Config{
-				Bucket:          envOr("S3_BUCKET_NAME", envOr("BUCKET_NAME", "mpiper")),
-				Region:          os.Getenv("S3_REGION"),
-				AccessKeyID:     os.Getenv("S3_ACCESS_KEY_ID"),
-				SecretAccessKey: os.Getenv("S3_SECRET_ACCESS_KEY"),
-				EndpointURL:     os.Getenv("S3_ENDPOINT_URL"),
+				Bucket:            envOr("S3_BUCKET_NAME", envOr("BUCKET_NAME", "mpiper")),
+				Region:            os.Getenv("S3_REGION"),
+				AccessKeyID:       os.Getenv("S3_ACCESS_KEY_ID"),
+				SecretAccessKey:   os.Getenv("S3_SECRET_ACCESS_KEY"),
+				EndpointURL:       os.Getenv("S3_ENDPOINT_URL"),
+				PublicEndpointURL: os.Getenv("S3_PUBLIC_ENDPOINT_URL"),
 			},
 		},
 		CORSAllowedOrigins: corsOrigins,

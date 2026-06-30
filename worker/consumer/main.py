@@ -36,7 +36,6 @@ def main():
     consumer = Consumer(
         pg_pool=pg, storage=storage, redis_url=cfg.redis.connection_string, cfg=cfg
     )
-    consumer.consume("media:jobs")
 
     shutdown = False
 

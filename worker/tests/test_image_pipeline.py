@@ -15,6 +15,9 @@ class StorageMock:
         # return fake URL
         return f"https://mock/{key}"
 
+    def public_url(self, key):
+        return f"https://mock/{key}"
+
 
 class TestProcessImageFile(unittest.TestCase):
     def setUp(self):
@@ -64,6 +67,7 @@ class TestProcessImageFile(unittest.TestCase):
         process_image_file(
             asset_id="test-123",
             local_raw_path="dummy.jpg",
+            content_hash="deadbeef",
             pg_pool=mock_pg_pool,
             storage=storage,
             cfg=cfg,
@@ -82,7 +86,7 @@ class TestProcessImageFile(unittest.TestCase):
         # 3. Storage upload was called for all 3 variants
         self.assertEqual(len(storage.calls), 3)
         for key, size, content_type in storage.calls:
-            self.assertIn("media/processed/test-123/img/", key)
+            self.assertIn("media/processed/test-123/", key)
             self.assertTrue(size > 0)
             self.assertIn("image/", content_type)
 

@@ -78,7 +78,7 @@ Create a `.env.local` file in the project root (`development` → `.env.local`, 
 # Server
 ENV=development
 HOST=0.0.0.0
-PORT=8080
+PORT=5010
 LOG_LEVEL=DEBUG
 
 # Database
@@ -108,7 +108,11 @@ S3_BUCKET_NAME=your-bucket-name
 S3_REGION=us-east-1
 S3_ACCESS_KEY_ID=your-access-key
 S3_SECRET_ACCESS_KEY=your-secret-key
-S3_ENDPOINT_URL=http://localhost:9000   # set for MinIO / S3-compatible stores
+S3_ENDPOINT_URL=http://localhost:9000          # internal/server-side endpoint (MinIO / S3-compatible)
+# Optional client-facing endpoint baked into presigned + public URLs. Set this
+# when internal services reach the store by a private host (e.g. http://minio:9000)
+# that external clients cannot resolve. Falls back to S3_ENDPOINT_URL when empty.
+S3_PUBLIC_ENDPOINT_URL=http://localhost:9000
 
 # Worker
 STREAM_NAME=media:jobs
@@ -159,8 +163,27 @@ python -m worker               # worker
 
 ### 6. Test the API
 
+All `/api/v1` routes require a Bearer token — an AES-256-GCM token carrying a
+user id, signed with `ENCRYPTION_KEY` (see [`pkg/utils/crypt.go`](pkg/utils/crypt.go)).
+Mint one for local testing:
+
 ```bash
-curl -X POST http://localhost:8080/api/v1/assets/upload \
+TOKEN=$(python3 - <<'PY'
+import base64, os
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+key = b"change_me_to_a_32_byte_secret____"   # your 32-byte ENCRYPTION_KEY
+nonce = os.urandom(12)
+ct = AESGCM(key).encrypt(nonce, b"demo-user", None)
+print(base64.urlsafe_b64encode(nonce + ct).rstrip(b"=").decode())
+PY
+)
+```
+
+Request a presigned upload URL:
+
+```bash
+curl -X POST http://localhost:5010/api/v1/storage/presign \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "fileName": "image.jpg",
@@ -168,6 +191,19 @@ curl -X POST http://localhost:8080/api/v1/assets/upload \
     "size": 1024000
   }'
 ```
+
+Upload the file to the returned `uploadUrl`, then mark the asset complete to
+enqueue processing:
+
+```bash
+curl -X PUT "<uploadUrl>" -H "Content-Type: image/jpeg" --data-binary @image.jpg
+
+curl "http://localhost:5010/api/v1/assets/<assetId>/complete" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+> Prefer the scripted path? [`scripts/demo-e2e.sh`](scripts/demo-e2e.sh) runs this
+> entire flow (image + video + webhooks) end-to-end — see **Run the demo** below.
 
 ## 🐳 Docker Deployment
 
@@ -199,9 +235,12 @@ kubectl apply -f deploy/k8s/
 
 ## 📖 API Documentation
 
-### Upload Asset
+All `/api/v1` routes require an `Authorization: Bearer <token>` header (see
+[Test the API](#6-test-the-api) for how to mint a token).
 
-**Endpoint:** `POST /api/v1/assets/upload`
+### Request a presigned upload URL
+
+**Endpoint:** `POST /api/v1/storage/presign`
 
 **Request:**
 ```json
@@ -215,31 +254,85 @@ kubectl apply -f deploy/k8s/
 **Response:**
 ```json
 {
-  "uploadUrl": "https://<storage-host>/...",
-  "assetId": "550e8400-e29b-41d4-a716-446655440000",
-  "method": "PUT",
-  "headers": {
-    "Content-Type": "image/jpeg"
-  },
-  "objectPath": "media/raw/550e8400-e29b-41d4-a716-446655440000",
-  "publicUrl": "https://<storage-host>/...",
-  "expiresAt": 1702468800
+  "status": "success",
+  "data": {
+    "uploadUrl": "http://localhost:9000/...",
+    "assetId": "550e8400-e29b-41d4-a716-446655440000",
+    "method": "PUT",
+    "headers": { "Content-Type": "image/jpeg" },
+    "objectPath": "example.jpg",
+    "publicUrl": "http://localhost:9000/...",
+    "expiresAt": 300
+  }
 }
 ```
 
-> The `uploadUrl` / `publicUrl` host depends on the configured storage provider (GCS, S3, or a MinIO endpoint).
+> The `uploadUrl` / `publicUrl` host comes from the configured storage provider.
+> For MinIO it is `S3_PUBLIC_ENDPOINT_URL` (the client-facing endpoint), so the
+> URL is reachable from wherever the client runs — see [Storage Providers](#storage-providers).
 
-### Mark Asset as Uploaded
+### Mark an asset complete (enqueue processing)
 
-**Endpoint:** `POST /api/v1/assets/{assetId}/uploaded`
+**Endpoint:** `GET /api/v1/assets/{assetId}/complete`
+
+Verifies the raw object exists in storage, transitions the asset to `uploaded`,
+creates the processing job, and enqueues it (transactionally, via the outbox).
 
 **Response:**
 ```json
 {
-  "message": "Asset marked as uploaded",
-  "assetId": "550e8400-e29b-41d4-a716-446655440000"
+  "status": "success",
+  "message": "Asset marked as uploaded"
 }
 ```
+
+### Webhooks
+
+Register an endpoint to receive processing-lifecycle events.
+
+**Endpoints:**
+- `POST /api/v1/webhooks` — register `{ "url", "secret", "events" }`
+- `GET /api/v1/webhooks` — list your registrations
+- `DELETE /api/v1/webhooks/{id}` — remove a registration
+
+**Events:** `job.starting`, `job.started`, `job.done`, `job.failed`.
+
+Deliveries are signed: each POST carries an `X-Webhook-Signature: sha256=<hmac>`
+header computed over the JSON body using your registration `secret` (stored
+encrypted at rest). A background dispatcher delivers pending events with
+exponential-backoff retries and tracks them in the `webhook_deliveries` table.
+
+```bash
+curl -X POST http://localhost:5010/api/v1/webhooks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/hooks/mpiper",
+    "secret": "my-signing-secret",
+    "events": ["job.starting", "job.started", "job.done", "job.failed"]
+  }'
+```
+
+## 🎬 Run the demo
+
+[`scripts/demo-e2e.sh`](scripts/demo-e2e.sh) drives the entire pipeline from the
+host — exactly like a real client — for both an image and a video, including
+webhook delivery. Bring the stack up **with the webhooks overlay**, then run it:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.webhooks.yml up -d --build
+
+./scripts/demo-e2e.sh
+```
+
+For each asset it presigns an upload, PUTs the file straight to MinIO over the
+public `localhost:9000` endpoint, marks it complete, waits for the worker to
+produce variants, fetches a variant back over HTTP, and asserts the
+`job.starting → job.started → job.done` webhooks were delivered. It prints a
+PASS/FAIL summary and exits non-zero on any failure.
+
+Requirements on the host: `bash`, `curl`, `jq`, `docker`, and a `python3` with
+the `cryptography` package (used only to mint the auth token).
 
 ## 🔧 Development
 
@@ -318,6 +411,20 @@ MPiper selects a storage backend via `BUCKET_PROVIDER`:
 
 Both the Go API and the Python worker share the same provider selection and env vars, so a single configuration drives the whole pipeline.
 
+#### Internal vs public endpoints (`S3_PUBLIC_ENDPOINT_URL`)
+
+When the store is reachable by a different host internally than externally —
+the classic Docker case, where services talk to `http://minio:9000` but a
+browser or a host-run client must use `http://localhost:9000` — set both:
+
+- `S3_ENDPOINT_URL` — the **internal/server-side** endpoint used for object I/O (`http://minio:9000`)
+- `S3_PUBLIC_ENDPOINT_URL` — the **client-facing** endpoint baked into presigned upload URLs and persisted variant URLs (`http://localhost:9000`)
+
+This matters because SigV4 signs the `Host` header: a presigned URL must be
+generated against the exact host the client will connect to, so it can't simply
+be rewritten afterwards. When `S3_PUBLIC_ENDPOINT_URL` is unset it falls back to
+`S3_ENDPOINT_URL` (single-endpoint behavior).
+
 ### Observability
 
 The API emits OpenTelemetry traces and metrics; the worker exposes Prometheus metrics. The `observability/` directory contains a ready-to-run collector plus Grafana, Tempo, Loki, and Prometheus configuration.
@@ -368,9 +475,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📊 Roadmap
 
 - [x] Support for AWS S3 / MinIO storage
-- [x] Webhook delivery tracking (schema)
+- [x] Webhook delivery with HMAC signing + retry tracking
+- [x] Video transcoding with FFmpeg (poster, 720p, preview)
 - [ ] Support for Azure Blob Storage
-- [ ] Video transcoding with FFmpeg
 - [ ] Admin dashboard
 - [ ] Batch processing API
 - [ ] CDN integration

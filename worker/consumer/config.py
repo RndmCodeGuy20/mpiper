@@ -71,6 +71,7 @@ class BucketConfig:
     access_key: str
     secret_key: str
     endpoint_url: Optional[str] = None
+    public_endpoint_url: Optional[str] = None
     provider: str = "gcs"
     sa_path: Optional[str] = None
 
@@ -80,13 +81,17 @@ class BucketConfig:
         # precedence over the generic BUCKET_* names so a single .env drives
         # both services. BUCKET_* remains the fallback / GCS default.
         bucket_name = os.getenv("S3_BUCKET_NAME") or os.getenv("BUCKET_NAME", "media-bucket")
+        endpoint_url = os.getenv("S3_ENDPOINT_URL") or os.getenv("BUCKET_ENDPOINT_URL")
         return BucketConfig(
             provider=os.getenv("BUCKET_PROVIDER", "gcs"),
             bucket_name=bucket_name,
             region=os.getenv("S3_REGION") or os.getenv("BUCKET_REGION", "us-east-1"),
             access_key=os.getenv("S3_ACCESS_KEY_ID") or os.getenv("BUCKET_ACCESS_KEY", ""),
             secret_key=os.getenv("S3_SECRET_ACCESS_KEY") or os.getenv("BUCKET_SECRET_KEY", ""),
-            endpoint_url=os.getenv("S3_ENDPOINT_URL") or os.getenv("BUCKET_ENDPOINT_URL"),
+            endpoint_url=endpoint_url,
+            # Client-facing endpoint baked into persisted variant URLs. Object
+            # I/O still uses endpoint_url (internal); falls back to it when unset.
+            public_endpoint_url=os.getenv("S3_PUBLIC_ENDPOINT_URL") or endpoint_url,
             sa_path=os.getenv("GCS_SA_PATH") or os.getenv("BUCKET_SA_PATH"),
         )
 
