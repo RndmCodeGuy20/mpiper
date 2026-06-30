@@ -105,9 +105,9 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB, m *metrics.Metrics) *chi.Mux {
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
+	r.Use(appMiddleware.TracingMiddleware)
 	r.Use(appMiddleware.LoggerMiddleware(logger))
 	r.Use(middleware.Timeout(MiddlewareTimeout))
-	r.Use(appMiddleware.TracingMiddleware)
 	r.Use(appMiddleware.MetricsMiddleware(m))
 	r.Use(middleware.Compress(5))
 	r.Use(appMiddleware.SlowRequestMiddleware(logger, 2*time.Second))
