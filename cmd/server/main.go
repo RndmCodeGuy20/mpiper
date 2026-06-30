@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -124,6 +125,13 @@ func main() {
 	relay := outbox.NewRelay(outboxRepo, rq, baseLogger, m, cfg.Outbox.RelayInterval, cfg.Outbox.RelayBatch)
 	_ = m.RegisterOutboxPendingFunc(func(ctx context.Context) (int64, error) {
 		return outboxRepo.CountPending(ctx)
+	})
+
+	// Observe the database connection-pool stats (in-use / idle / open / max /
+	// wait count). sqlx.DB embeds *sql.DB, so db.Stats() exposes pool saturation
+	// — the key signal for whether the DB pool is a bottleneck under load.
+	_ = m.RegisterDBStatsFunc(func() sql.DBStats {
+		return db.Stats()
 	})
 	go relay.Start(serverCtx)
 	go relay.StartCleanup(serverCtx, cfg.Outbox.Retention)
