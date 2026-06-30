@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -124,6 +125,18 @@ func (rq *RedisQueue) Enqueue(ctx context.Context, payload map[string]interface{
 
 	streamEntry := map[string]interface{}{
 		"body": string(body),
+	}
+
+	// Inject the active trace context as top-level message fields so the worker
+	// can extract it and continue the trace across the queue boundary. The
+	// propagator writes traceparent (and tracestate when present); we copy them
+	// out as separate stream fields alongside body, preserving existing keys.
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	for _, k := range []string{"traceparent", "tracestate", "baggage"} {
+		if v := carrier.Get(k); v != "" {
+			streamEntry[k] = v
+		}
 	}
 
 	args := &redis.XAddArgs{

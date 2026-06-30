@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.uber.org/zap"
 )
 
@@ -258,11 +259,23 @@ func (s *assetService) MarkAssetUploaded(ctx context.Context, assetID uuid.UUID)
 		"event":     "asset_uploaded",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
+
+	// Capture the active trace context so it survives the outbox store-and-forward
+	// hop. The relay (running on a background ticker context) re-activates this
+	// before publishing to Redis, keeping the whole pipeline in one trace.
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctxOutbox, carrier)
+	var traceparent *string
+	if tp := carrier.Get("traceparent"); tp != "" {
+		traceparent = &tp
+	}
+
 	err = s.outboxRepo.InsertTx(ctxOutbox, tx, models.OutboxEvent{
 		AggregateID: assetID,
 		JobID:       jobID,
 		Event:       "asset_uploaded",
 		Payload:     payload,
+		Traceparent: traceparent,
 	})
 	spanOutbox.End()
 

@@ -8,6 +8,11 @@ import (
 	"github.com/rndmcodeguy20/mpiper/internal/metrics"
 	"github.com/rndmcodeguy20/mpiper/internal/queue"
 	"github.com/rndmcodeguy20/mpiper/internal/repository"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -17,12 +22,13 @@ type Relay struct {
 	queue    queue.Queue
 	logger   *zap.Logger
 	m        *metrics.Metrics
+	tracer   trace.Tracer
 	interval time.Duration
 	batch    int
 }
 
 func NewRelay(repo repository.OutboxRepository, q queue.Queue, logger *zap.Logger, m *metrics.Metrics, interval time.Duration, batch int) *Relay {
-	return &Relay{repo: repo, queue: q, logger: logger, m: m, interval: interval, batch: batch}
+	return &Relay{repo: repo, queue: q, logger: logger, m: m, tracer: otel.Tracer("mpiper-api"), interval: interval, batch: batch}
 }
 
 // Start runs the relay loop until ctx is cancelled. It finishes the in-flight batch before returning.
@@ -71,8 +77,26 @@ func (r *Relay) tick(ctx context.Context) {
 			continue
 		}
 
-		if _, err := r.queue.Enqueue(ctx, payload); err != nil {
+		// Re-activate the producer's trace context (captured when the row was
+		// written) so the publish + enqueue spans rejoin the original request
+		// trace instead of starting a disconnected root. tick() runs on a
+		// background ticker context, so without this the trace would break here.
+		publishCtx := ctx
+		if row.Traceparent != nil && *row.Traceparent != "" {
+			carrier := propagation.MapCarrier{"traceparent": *row.Traceparent}
+			publishCtx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+		}
+		publishCtx, span := r.tracer.Start(publishCtx, "outbox.publish")
+		span.SetAttributes(
+			attribute.Int64("outbox.row_id", row.ID),
+			attribute.String("event", row.Event),
+		)
+
+		if _, err := r.queue.Enqueue(publishCtx, payload); err != nil {
 			r.logger.Warn("outbox relay: enqueue failed", zap.Int64("id", row.ID), zap.Error(err))
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "enqueue failed")
+			span.End()
 			_ = r.repo.IncrementAttempts(ctx, row.ID, err.Error())
 			if row.Attempts+1 >= row.MaxAttempts {
 				_ = r.repo.MarkFailed(ctx, row.ID, err.Error())
@@ -82,6 +106,7 @@ func (r *Relay) tick(ctx context.Context) {
 			}
 			continue
 		}
+		span.End()
 
 		publishedIDs = append(publishedIDs, row.ID)
 	}
