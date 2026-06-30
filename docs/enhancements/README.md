@@ -88,9 +88,9 @@ premature** — the DB isn't the problem yet; the webhook *delivery loop* is.
 |---|-------|---------------------|--------|
 | 1 | [Concurrent worker + proper stream recovery + DLQ](track-01-concurrent-worker.md) | Concurrency models, at-least-once recovery, poison-message handling, head-of-line blocking | **done ✅ (2.37× — exp 0002)** |
 | 1b | Webhook delivery throughput *(surfaced by exp 0001)* | Concurrent I/O-bound delivery, backpressure on a side-channel, decoupling fan-out from job completion | **done ✅ (exp 0003)** |
-| 2 | [Queue-depth autoscaling](track-02-handoff.md) | Backpressure, control loops, Little's Law, SLO-driven capacity | **next — P1 (unblocked by T1)** |
+| 2 | [Queue-depth autoscaling](track-02-handoff.md) | Backpressure, control loops, Little's Law, SLO-driven capacity | **ready — needs k8s (deferred until a cluster is available)** |
 | 3 | [End-to-end tracing, SLOs & local load testing](track-03-observability-and-load.md) | Context propagation across async boundaries, the three pillars, SLO/SLI/error budgets, load-test methodology | **done ✅** |
-| 4 | [Multi-tenancy, auth & quotas](track-04-multitenancy-auth.md) | AuthN vs AuthZ, key rotation, the idempotency pattern, tenant isolation | planned |
+| 4 | [Multi-tenancy, auth & quotas](track-04-handoff.md) | AuthN vs AuthZ, key rotation, the idempotency pattern, tenant isolation | planned |
 | 5 | [Production ingestion pipeline](track-05-ingestion.md) | Resumable/multipart uploads, pipeline stages, defense-in-depth, trust boundaries | planned |
 | 6 | [Adaptive streaming + CDN](track-06-adaptive-streaming.md) | ABR streaming, CDN cache/invalidation, edge auth, encoding cost/quality tradeoffs | planned |
 | 7 | [Data layer at scale](track-07-data-layer.md) | Table partitioning, CDC vs polling, index design under write load | **deferred — rescope to `webhook_deliveries`** |
