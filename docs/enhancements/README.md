@@ -10,11 +10,15 @@ decision, tradeoffs, how success is measured), and pair every track with a
 load test or chaos experiment so each claim ("now it scales", "now it's
 exactly-once") is *demonstrated*, not assumed.
 
-> **Progress:** Track 3 (observability + load testing) is **done** ✅. It shipped
-> the foundation that makes everything below *measurable* — end-to-end tracing,
-> SLOs, Grafana dashboards, and a k6 load harness. The first load test
-> ([`experiments/0001-worker-saturation.md`](../../experiments/0001-worker-saturation.md))
-> already re-ordered this roadmap with hard data instead of hunches.
+> **Progress:** Track 3 (observability + load testing) ✅, **Track 1 (concurrent
+> worker + XAUTOCLAIM recovery + DLQ) ✅**, and **Track 1b (webhook delivery
+> throughput) ✅** are done. Track 3 shipped the foundation that makes everything
+> measurable — tracing, SLOs, dashboards, a k6 harness. Track 1 then turned the #1
+> bottleneck into a **measured 2.37× worker throughput win** (0.73 → 1.73 jobs/s,
+> 1 → ~3.2 cores; see [`experiments/0002`](../../experiments/0002-concurrent-worker.md)),
+> and Track 1b wired the webhook delivery metrics + concurrent fan-out (see
+> [`experiments/0003`](../../experiments/0003-webhook-throughput.md)). **Next: Track 2
+> (autoscaling)** — now unblocked, since there is finally a concurrent worker to scale.
 
 ## Where we are today
 
@@ -33,16 +37,21 @@ with good bones — now fully observable:
 Known seams where "side project" becomes "system" (verified in code, and now
 several of them **measured** under load):
 
-- **Single-threaded worker** — `MAX_CONCURRENT_JOBS` exists in config but is never
-  used; `consume()` pulls one message (`count=1`) and processes it inline.
-  *Measured:* μ ≈ **1.1 jobs/s**, worker CPU **98%**, queue depth → **2,544**. The
-  hard throughput ceiling and the confirmed **#1 bottleneck**.
-- **Webhook dispatcher can't keep up** — a 2s poll × batch-50 loop delivering
-  webhooks with synchronous HTTP + retries. *Measured:* `webhook_pending` peaked at
-  **~5,900** and never drained. A second, independent bottleneck.
-- **Homegrown recovery** — a 2-min DB-scan + re-`XADD`, not Redis Streams'
-  `XPENDING`/`XAUTOCLAIM` consumer-group recovery; poison messages are marked
-  `failed` and dropped (no dead-letter stream).
+- **~~Single-threaded worker~~ ✅ RESOLVED (Track 1)** — now a bounded
+  `ThreadPoolExecutor` honouring `MAX_CONCURRENT_JOBS`. *Measured:* μ rose from
+  ~1.1 → **1.73 jobs/s (2.37×)** and worker CPU from 1 → ~3.2 cores at `mcj=4`.
+  Lesson banked: tune `MAX_CONCURRENT_JOBS ≈ cores` — `mcj=8` on 4 cores
+  *oversubscribed* and was slower.
+- **~~Webhook dispatcher can't keep up~~ ✅ RESOLVED (Track 1b)** — concurrent
+  `errgroup` fan-out (`WEBHOOK_CONCURRENCY`) + tuned HTTP transport, and the
+  previously-unrecorded `webhook_delivery_*` metrics are now wired. *Note:* at
+  local scale (fast receiver, CPU-pinned API) the dispatcher kept up even
+  serially, so the win here is observability + headroom; see
+  [`experiments/0003`](../../experiments/0003-webhook-throughput.md).
+- **~~Homegrown recovery~~ ✅ RESOLVED (Track 1)** — replaced the DB-scan + re-`XADD`
+  with `XAUTOCLAIM` consumer-group recovery, and added a **dead-letter stream**
+  (`media:jobs:dlq`) with failure metadata + a depth gauge for poison/over-retried
+  messages (previously dropped/unacked-forever).
 - **No raw-upload lifecycle** — objects in `media/raw/` are never deleted.
   *Measured:* ~**50%** of presigned uploads are never completed → orphaned objects
   accumulate.
@@ -77,9 +86,9 @@ premature** — the DB isn't the problem yet; the webhook *delivery loop* is.
 
 | # | Track | Core systems lesson | Status |
 |---|-------|---------------------|--------|
-| 1 | [Concurrent worker + proper stream recovery + DLQ](track-01-concurrent-worker.md) | Concurrency models, at-least-once recovery, poison-message handling, head-of-line blocking | **next — P0 (data-confirmed)** |
-| 1b | Webhook delivery throughput *(surfaced by exp 0001)* | Concurrent I/O-bound delivery, backpressure on a side-channel, decoupling fan-out from job completion | **new — P1** |
-| 2 | [Queue-depth autoscaling](track-02-autoscaling.md) | Backpressure, control loops, Little's Law, SLO-driven capacity | planned (after T1) |
+| 1 | [Concurrent worker + proper stream recovery + DLQ](track-01-concurrent-worker.md) | Concurrency models, at-least-once recovery, poison-message handling, head-of-line blocking | **done ✅ (2.37× — exp 0002)** |
+| 1b | Webhook delivery throughput *(surfaced by exp 0001)* | Concurrent I/O-bound delivery, backpressure on a side-channel, decoupling fan-out from job completion | **done ✅ (exp 0003)** |
+| 2 | [Queue-depth autoscaling](track-02-handoff.md) | Backpressure, control loops, Little's Law, SLO-driven capacity | **next — P1 (unblocked by T1)** |
 | 3 | [End-to-end tracing, SLOs & local load testing](track-03-observability-and-load.md) | Context propagation across async boundaries, the three pillars, SLO/SLI/error budgets, load-test methodology | **done ✅** |
 | 4 | [Multi-tenancy, auth & quotas](track-04-multitenancy-auth.md) | AuthN vs AuthZ, key rotation, the idempotency pattern, tenant isolation | planned |
 | 5 | [Production ingestion pipeline](track-05-ingestion.md) | Resumable/multipart uploads, pipeline stages, defense-in-depth, trust boundaries | planned |
@@ -94,16 +103,21 @@ premature** — the DB isn't the problem yet; the webhook *delivery loop* is.
 
 ## Recommended sequence (re-prioritized from exp 0001 data)
 
-1. **Track 1 — concurrent worker + DLQ + stream recovery.** **P0, data-confirmed.**
-   The single-threaded worker is the throughput ceiling (μ ≈ 1.1 jobs/s, queue → 2,544).
-   Biggest lever; self-contained. *Verify:* re-run `open --rate 10/s` — expect μ to
-   scale with the pool and the queue to stabilize → `experiments/0002`.
-2. **Track 1b — webhook delivery throughput.** **P1, newly surfaced.** Independent of
-   the worker: `webhook_pending` hit ~5,900 and never drained. Concurrent/batched
-   delivery + wire the unrecorded `webhook_delivery_*` metrics. Small, high-value.
-   *Verify:* `webhook_pending` drains under the same load.
-3. **Track 2 — autoscaling.** Needs a concurrent worker first; then scale it on the
-   queue-lag signal we already expose. Now directly measurable.
+1. **~~Track 1 — concurrent worker + DLQ + stream recovery.~~ ✅ DONE.**
+   Was the P0 throughput ceiling (μ ≈ 1.1 jobs/s). Now a bounded pool: **measured
+   2.37×** (0.73 → 1.73 jobs/s), multi-core, 100% success, live DLQ. See
+   `experiments/0002`. Lesson: set `MAX_CONCURRENT_JOBS ≈ cores`.
+2. **~~Track 1b — webhook delivery throughput.~~ ✅ DONE.** Concurrent fan-out +
+   wired `webhook_delivery_*` metrics + transport tuning. Not the bottleneck at
+   local scale (kept up serially), so the win is observability + headroom; see
+   `experiments/0003`. To prove it under stress, re-run with a latency-bearing
+   receiver.
+3. **Track 2 — autoscaling. ← NEXT.** Now unblocked: there is finally a concurrent
+   worker to scale. Drive worker replica count off the queue-lag signal we already
+   expose (KEDA; k8s manifests exist). *Verify:* a backlog → scale-up → drain cycle.
+   Carry the Track 1 lesson forward — each replica runs its own pool, so set
+   `MAX_CONCURRENT_JOBS ≈ cores-per-pod` and scale *pods*, not threads. See
+   [`track-02-handoff.md`](track-02-handoff.md).
 4. **Track 4 — multi-tenancy + idempotency + auth.** The leap to "real users".
 5. **Track 6 — adaptive streaming + CDN.** The headline product feature.
 6. **Track 5 — ingestion.** Includes the small wins exp 0001 surfaced: abandoned-upload
@@ -113,9 +127,10 @@ premature** — the DB isn't the problem yet; the webhook *delivery loop* is.
    polled table that actually strained) rather than blanket partitioning.
 8. **Track 8 — resilience & correctness.** Depth once the throughput tracks land.
 
-> **Track 3 follow-ups (do before the next experiment so p95s aren't distorted):**
-> wire the `webhook_delivery_*` and `storage_operation_*` metrics, add a fine-bucket
-> view to `db.query.duration`, and standardize histogram buckets across services.
+> **~~Track 3 follow-ups~~ ✅ DONE** (folded into Track 1b): `webhook_delivery_*`
+> metrics wired, `db.query.duration` fine-bucket view added, `storage_operation_*`
+> confirmed already recorded. Histogram-bucket standardization remains a watch-item
+> when reading p95 across a deploy window.
 
 ---
 
