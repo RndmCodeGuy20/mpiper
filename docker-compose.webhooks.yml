@@ -9,7 +9,9 @@ services:
     image: mendhak/http-https-echo:latest
     container_name: mpiper-webhook-receiver
     ports:
-      - "8888:8080"
+      # Host 8899 (not 8888 — that collides with the otel-collector). Internal
+      # delivery uses the docker-network name http://webhook-receiver:8080.
+      - "8899:8080"
     environment:
       HTTP_PORT: 8080
     networks:

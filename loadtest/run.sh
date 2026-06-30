@@ -4,11 +4,19 @@
 # Usage:
 #   ./loadtest/run.sh closed --vus 10 --duration 2m [--ramp]
 #   ./loadtest/run.sh open   --rate 5/s --duration 3m [--max-vus 200]
+#   ./loadtest/run.sh capture "label"        # snapshot headline signals from Prometheus
 #
-# Options (any model):
+# Options (closed/open):
 #   --fixture PATH   image fixture to fan out (default worker/tests/test_assets/image.jpg)
 #   --base-url URL   API base (default http://localhost:5010)
 #   --no-prometheus  do not stream k6 metrics to Prometheus remote-write
+#
+# A/B contrast (concurrent worker + webhooks) — same binary, flip env knobs on
+# docker-compose.loadtest.yml (see its header), then run + capture each side:
+#   WORKER_CPUS=4 MAX_CONCURRENT_JOBS=1 WEBHOOK_CONCURRENCY=1  docker compose … up -d --force-recreate worker api
+#   ./loadtest/run.sh closed --vus 20 --duration 2m && ./loadtest/run.sh capture "BEFORE"
+#   WORKER_CPUS=4 MAX_CONCURRENT_JOBS=8 WEBHOOK_CONCURRENCY=10 docker compose … up -d --force-recreate worker api
+#   ./loadtest/run.sh closed --vus 20 --duration 2m && ./loadtest/run.sh capture "AFTER"
 #
 # Requires on the host: k6 (brew install k6), python3 with `cryptography`
 # (only to mint the AES-GCM auth token), and the stack up with the
@@ -16,11 +24,51 @@
 set -euo pipefail
 
 MODEL="${1:-}"
-if [[ "$MODEL" != "closed" && "$MODEL" != "open" ]]; then
-  echo "usage: $0 <closed|open> [options]" >&2
+if [[ "$MODEL" != "closed" && "$MODEL" != "open" && "$MODEL" != "capture" ]]; then
+  echo "usage: $0 <closed|open|capture> [options|label]" >&2
   exit 2
 fi
 shift || true
+
+# --- capture mode: snapshot headline pipeline signals from Prometheus --------
+# Run RIGHT AFTER a load run (instant queries see ~the last few minutes). The
+# remaining args are a free-text label so before/after snapshots are labelled.
+if [[ "$MODEL" == "capture" ]]; then
+  LABEL="${*:-snapshot}"
+  PROM="${PROM_URL:-http://localhost:9090}"
+  _q() {
+    python3 - "$PROM" "$1" <<'PY'
+import json, sys, urllib.parse, urllib.request
+prom, expr = sys.argv[1], sys.argv[2]
+url = f"{prom}/api/v1/query?" + urllib.parse.urlencode({"query": expr})
+try:
+    with urllib.request.urlopen(url, timeout=10) as r:
+        data = json.load(r)
+    res = data["data"]["result"]
+    print("n/a" if not res else f'{float(res[0]["value"][1]):.3f}')
+except Exception as e:
+    print(f"err:{e}")
+PY
+  }
+  echo "========================================================================"
+  echo " MPiper signals — $LABEL"
+  echo " $(date -u +%Y-%m-%dT%H:%M:%SZ)  ·  prom=$PROM"
+  echo "========================================================================"
+  printf "%-42s %s\n" "Worker service rate mu (jobs/s)" "$(_q 'sum(rate(mpiper_mpiper_job_processing_success_total[2m]))')"
+  printf "%-42s %s\n" "Job failures/s"                  "$(_q 'sum(rate(mpiper_mpiper_job_processing_failed_total[2m]))')"
+  printf "%-42s %s\n" "Queue depth (max)"               "$(_q 'max(mpiper_queue_depth)')"
+  printf "%-42s %s\n" "Asset proc mean (s)"             "$(_q 'sum(rate(mpiper_mpiper_asset_processing_duration_seconds_sum[2m])) / clamp_min(sum(rate(mpiper_mpiper_asset_processing_duration_seconds_count[2m])),1)')"
+  printf "%-42s %s\n" "Webhook pending (max)"           "$(_q 'max(mpiper_webhook_pending)')"
+  printf "%-42s %s\n" "Webhook delivery rate (/s)"      "$(_q 'sum(rate(mpiper_webhook_delivery_total[2m]))')"
+  printf "%-42s %s\n" "Webhook delivery failures/s"     "$(_q 'sum(rate(mpiper_webhook_delivery_failures_total[2m]))')"
+  printf "%-42s %s\n" "Webhook delivery p95 (s)"        "$(_q 'histogram_quantile(0.95, sum by (le) (rate(mpiper_webhook_delivery_duration_seconds_bucket[2m])))')"
+  printf "%-42s %s\n" "DLQ depth (max)"                 "$(_q 'max(mpiper_mpiper_dlq_depth)')"
+  printf "%-42s %s\n" "DB connections in-use (max)"     "$(_q 'max(mpiper_db_connections_active)')"
+  printf "%-42s %s\n" "DB connection waits (max)"       "$(_q 'max(mpiper_db_connections_wait_count)')"
+  echo "------------------------------------------------------------------------"
+  echo "tip: also grab 'docker stats --no-stream mpiper-worker' for worker CPU%."
+  exit 0
+fi
 
 VUS=10
 DURATION=""

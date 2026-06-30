@@ -42,6 +42,36 @@ docker compose \
 
 Options: `--fixture PATH`, `--base-url URL`, `--no-prometheus`.
 
+## A/B contrast (concurrent worker + webhooks)
+
+The concurrency knobs live on `docker-compose.loadtest.yml` as env vars
+(defaults reproduce the single-threaded baseline). Flip them on the **same
+binary** — no new overlays, no code changes — to isolate the concurrency
+variable at a fixed core budget:
+
+```bash
+CF="-f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.loadtest.yml -f docker-compose.webhooks.yml"
+
+# BEFORE — serial
+WORKER_CPUS=4 MAX_CONCURRENT_JOBS=1 WEBHOOK_CONCURRENCY=1  docker compose $CF up -d --build
+./loadtest/run.sh closed --vus 20 --duration 2m
+./loadtest/run.sh capture "BEFORE serial (mcj=1, wc=1)"
+
+# AFTER — concurrent (flip knobs, recreate worker+api, no rebuild)
+WORKER_CPUS=4 MAX_CONCURRENT_JOBS=8 WEBHOOK_CONCURRENCY=10 docker compose $CF up -d --force-recreate worker api
+./loadtest/run.sh closed --vus 20 --duration 2m
+./loadtest/run.sh capture "AFTER concurrent (mcj=8, wc=10)"
+```
+
+`./loadtest/run.sh capture "label"` snapshots the headline signals (worker μ,
+queue depth, webhook pending/rate/p95, DLQ depth, DB pool) from Prometheus —
+run it right after each load run. Also grab `docker stats --no-stream
+mpiper-worker` for worker CPU%.
+
+> The default 1-CPU pin masks the worker win (threads can't exceed one core of
+> CPU work), so the A/B uses `WORKER_CPUS=4` on **both** sides and the
+> `closed` model to measure max sustained μ directly.
+
 ## What to watch
 
 - **k6 terminal summary** — client-side request rate, error rate, and the custom

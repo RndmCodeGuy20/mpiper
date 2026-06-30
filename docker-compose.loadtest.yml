@@ -10,17 +10,25 @@
 # Why this exists
 # ---------------
 # Local load-test results are only interpretable when resources are PINNED, so
-# "the worker is the bottleneck" is a stable, observable fact rather than
-# something that moves run to run depending on spare laptop cores. This overlay:
+# the bottleneck is a stable, observable fact rather than something that moves
+# run to run with spare laptop cores. This overlay caps CPU/memory on `api` and
+# `worker` and forces TRACE_SAMPLING_RATE=1.0 (every asset traced).
 #
-#   1. Caps CPU/memory on `api` and `worker` via `deploy.resources.limits`
-#      (honoured by `docker compose up` in Compose v2 — no swarm needed).
-#   2. Forces TRACE_SAMPLING_RATE=1.0 so every asset produces a full trace.
+# Tunable knobs (env, with baseline defaults) — flip these for an A/B on the
+# SAME binary without editing this file or adding new overlays:
 #
-# The worker is intentionally pinned to a single CPU: it is single-threaded
-# today (Track 1), and pinning makes that saturation visible and reproducible.
-# Document the limits alongside every experiment — changing them changes ffmpeg
-# thread behaviour, which is the point, but it must be recorded for comparison.
+#   WORKER_CPUS           worker CPU limit            (default 1.0)
+#   WORKER_MEM            worker memory limit         (default 1024M)
+#   MAX_CONCURRENT_JOBS   worker pool size            (default 1 → serial baseline)
+#   WEBHOOK_CONCURRENCY   webhook delivery fan-out    (default 1 → serial baseline)
+#   JOB_POLL_INTERVAL     worker idle poll (s)        (default 1)
+#
+# Example A/B (concurrent worker + webhooks), same image, fixed core budget:
+#   BEFORE: WORKER_CPUS=4 MAX_CONCURRENT_JOBS=1 WEBHOOK_CONCURRENCY=1  docker compose … up -d --force-recreate worker api
+#   AFTER:  WORKER_CPUS=4 MAX_CONCURRENT_JOBS=8 WEBHOOK_CONCURRENCY=10 docker compose … up -d --force-recreate worker api
+#
+# Defaults reproduce the single-threaded Track-1 baseline. Record whatever knob
+# values you used alongside every experiment — they change the ceiling.
 # ============================================================================
 
 name: mpiper
@@ -30,6 +38,8 @@ services:
     environment:
       # Full sampling locally — never lose a trace to the 0.1 code default.
       TRACE_SAMPLING_RATE: "1.0"
+      # Webhook delivery fan-out. Default 1 = serial baseline; raise for the A/B.
+      WEBHOOK_CONCURRENCY: "${WEBHOOK_CONCURRENCY:-1}"
     deploy:
       resources:
         limits:
@@ -43,12 +53,16 @@ services:
     environment:
       # Full sampling locally; matches the API so the whole trace is captured.
       TRACE_SAMPLING_RATE: "1.0"
+      # Worker pool size. Default 1 = single-threaded baseline; raise for the A/B.
+      MAX_CONCURRENT_JOBS: "${MAX_CONCURRENT_JOBS:-1}"
+      JOB_POLL_INTERVAL: "${JOB_POLL_INTERVAL:-1}"
     deploy:
       resources:
         limits:
-          # Single CPU on purpose — surfaces the single-threaded bottleneck.
-          cpus: "1.0"
-          memory: 1024M
+          # Default 1 CPU surfaces the single-threaded baseline; set WORKER_CPUS
+          # higher (e.g. 4) to give the pool real cores for the concurrency A/B.
+          cpus: "${WORKER_CPUS:-1.0}"
+          memory: "${WORKER_MEM:-1024M}"
         reservations:
           cpus: "0.5"
           memory: 256M
