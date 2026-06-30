@@ -1,0 +1,24 @@
+# ============================================================================
+# Grafana Dashboards — provider config
+#
+# IMPORTANT: this file must live in the *dashboards* provisioning directory
+# (/etc/grafana/provisioning/dashboards), NOT the datasources one — Grafana
+# only scans this directory for dashboard providers. It was previously misplaced
+# under datasources/, so no JSON dashboards were ever loaded.
+# ============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: 'MPiper'
+    orgId: 1
+    folder: 'MPiper'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      # Same dir the JSON dashboards are mounted into; Grafana loads *.json as
+      # dashboards and ignores this provider yaml.
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: true
