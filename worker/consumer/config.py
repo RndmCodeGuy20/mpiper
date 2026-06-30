@@ -132,6 +132,8 @@ class WorkerConfig:
     consumer_group: str = "worker-group"
     max_concurrent_jobs: int = 5
     job_poll_interval: int = 10
+    recovery_min_idle_ms: int = 120000
+    dlq_stream_name: str = "media:jobs:dlq"
 
     @staticmethod
     def from_env() -> "WorkerConfig":
@@ -158,6 +160,8 @@ class WorkerConfig:
             ),
             max_concurrent_jobs=int(os.getenv("MAX_CONCURRENT_JOBS", "5")),
             job_poll_interval=int(os.getenv("JOB_POLL_INTERVAL", "10")),
+            recovery_min_idle_ms=int(os.getenv("RECOVERY_MIN_IDLE_MS", "120000")),
+            dlq_stream_name=os.getenv("STREAM_DLQ_NAME", "media:jobs:dlq"),
             temp_dir=temp_dir,
             stream_name=os.getenv("STREAM_NAME", "media:jobs"),
             consumer_group=os.getenv("CONSUMER_GROUP", "worker-group"),

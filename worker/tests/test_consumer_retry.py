@@ -9,6 +9,7 @@ def _make_consumer(max_retries=3):
     cfg = MagicMock()
     cfg.stream_name = "media:jobs"
     cfg.consumer_group = "media-workers"
+    cfg.max_concurrent_jobs = 1
     cfg.redis.max_retries = max_retries
     with patch("worker.consumer.consumer.redis.Redis.from_url") as from_url:
         from_url.return_value = MagicMock()
@@ -44,6 +45,9 @@ class TestRetryClassification(unittest.TestCase):
         sql = _executed_sql(cursor)
         self.assertIn("UPDATE jobs SET status = 'pending'", sql)
         self.assertNotIn("UPDATE assets SET status = 'failed'", sql)
+        # Retryable failure stays in the PEL: no DLQ, no ack.
+        consumer.redis.xadd.assert_not_called()
+        consumer.redis.xack.assert_not_called()
 
     @patch("worker.consumer.consumer.process_asset_dispatch")
     def test_non_retryable_exception_fails_immediately(self, mock_dispatch):
@@ -56,6 +60,9 @@ class TestRetryClassification(unittest.TestCase):
         # Fails now despite attempts (0) being below the cap.
         self.assertIn("UPDATE assets SET status = 'failed'", sql)
         self.assertNotIn("UPDATE jobs SET status = 'pending'", sql)
+        # Poison message is dead-lettered and the original acked.
+        consumer.redis.xadd.assert_called_once()
+        consumer.redis.xack.assert_called_once_with("media:jobs", "media-workers", "1-0")
 
 
 if __name__ == "__main__":

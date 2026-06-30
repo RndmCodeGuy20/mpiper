@@ -53,6 +53,16 @@
         { "refId": "A", "expr": "sli:webhook_delivery_latency_seconds:p95", "legendFormat": "delivery p95" },
         { "refId": "B", "expr": "sli:webhook_pending:current", "legendFormat": "pending (count)" }
       ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Dead-letter stream depth (media:jobs:dlq)",
+      "description": "Number of poison/over-retried messages parked in the DLQ. Should sit at ~0; a rising line means jobs are failing permanently and need inspection/replay.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "max(mpiper_mpiper_dlq_depth)", "legendFormat": "DLQ depth" } ]
     }
   ]
 }

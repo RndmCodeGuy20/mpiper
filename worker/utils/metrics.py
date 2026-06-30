@@ -279,13 +279,39 @@ def record_asset(asset_type: str, duration_seconds: float, success: bool) -> Non
 
 def get_meter() -> Optional[metrics.Meter]:
     """Get the global meter instance.
-    
+
     Returns
     -------
     Optional[metrics.Meter]
         The meter instance, or None if not initialized
     """
     return _meter
+
+
+def register_dlq_depth_gauge(get_depth) -> None:
+    """Register an observable gauge reporting the dead-letter stream length.
+
+    `get_depth` is a zero-arg callable returning the current DLQ depth (e.g.
+    `lambda: redis.xlen(dlq_stream)`). The gauge is observed at each metric
+    export; if telemetry was not initialised (meter is None) this is a no-op so
+    the worker keeps running. Failures in the callback are swallowed so a Redis
+    blip never breaks metric export.
+    """
+    if _meter is None:
+        return
+
+    def _observe(_options):
+        try:
+            return [metrics.Observation(int(get_depth()))]
+        except Exception:  # pragma: no cover - defensive: never break export
+            return []
+
+    _meter.create_observable_gauge(
+        name="mpiper.dlq.depth",
+        callbacks=[_observe],
+        description="Current number of messages in the dead-letter stream",
+        unit="{message}",
+    )
 
 
 def shutdown_metrics() -> None:

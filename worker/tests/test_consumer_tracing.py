@@ -23,6 +23,7 @@ def _make_consumer():
     cfg = MagicMock()
     cfg.stream_name = "media:jobs"
     cfg.consumer_group = "media-workers"
+    cfg.max_concurrent_jobs = 2
     with patch("worker.consumer.consumer.redis.Redis.from_url") as from_url:
         from_url.return_value = MagicMock()
         consumer = Consumer(
@@ -51,6 +52,9 @@ class TestConsumeSpanPropagation(unittest.TestCase):
             "worker.consumer.consumer.get_tracer", return_value=self.tracer
         ):
             consumer.consume("worker-1")
+            # Dispatch is now async (thread pool); wait for the task to finish
+            # while the tracer patch is still active so the span is captured.
+            consumer._await_inflight(timeout=5)
         return consumer
 
     def test_consume_span_is_child_and_linked_to_producer(self):

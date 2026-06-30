@@ -1,4 +1,5 @@
 import logging
+import os
 import signal
 import time
 
@@ -60,7 +61,17 @@ def main():
         run_migrations(dsn, migrations_dir=cfg.migrations_dir)
         logger.info("Migrations applied successfully")
 
-    pg = PgPool(dsn=dsn)
+    # Size the DB pool to the worker concurrency. Each in-flight job holds at
+    # most one connection at a time, so MAX_CONCURRENT_JOBS connections plus a
+    # small headroom (recovery/bookkeeping queries) avoids jobs blocking on the
+    # pool while staying well under Postgres' connection limit.
+    db_pool_size = max(1, cfg.max_concurrent_jobs) + 2
+    pg = PgPool(dsn=dsn, max_size=db_pool_size)
+    logger.info(
+        "db pool sized to %d (max_concurrent_jobs=%d + 2 headroom)",
+        db_pool_size,
+        cfg.max_concurrent_jobs,
+    )
     consumer = Consumer(
         pg_pool=pg, storage=storage, redis_url=cfg.redis.connection_string, cfg=cfg
     )
@@ -78,14 +89,24 @@ def main():
     logger.info("starting job loop")
     while not shutdown:
         try:
-            processed = consumer.consume(
-                cfg.stream_name
-            )  # single iteration --- returns True if did work
-            if not processed:
-                time.sleep(cfg.job_poll_interval)
+            # consume() tops up the bounded worker pool with as many new messages
+            # as there is free capacity, then returns. It returns False when the
+            # pool is full or no messages were available — sleep briefly so freed
+            # slots are picked up promptly without busy-spinning.
+            did_work = consumer.consume(cfg.worker_id)
+            if not did_work:
+                time.sleep(min(cfg.job_poll_interval, 0.5))
         except Exception:
             logger.exception("unhandled error in loop")
             time.sleep(1)
+
+    logger.info("draining in-flight jobs before exit")
+    # Bounded drain: wait up to SHUTDOWN_DRAIN_TIMEOUT seconds for running jobs
+    # to finish. Anything still running is abandoned (its message stays in the
+    # PEL) and reclaimed by XAUTOCLAIM recovery later. Keep this <= the container
+    # stop_grace_period so we shut down cleanly instead of being SIGKILLed.
+    drain_timeout = float(os.getenv("SHUTDOWN_DRAIN_TIMEOUT", "30"))
+    consumer.shutdown(timeout=drain_timeout)
 
     logger.info("exiting")
 
