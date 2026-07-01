@@ -104,7 +104,7 @@ func (h *AssetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
 		if h.m != nil {
 			h.m.AssetProcessingFailed.Add(timeoutCtx, 1)
 		}
-		utils.RespondJSON(w, map[string]string{"status": "error", "message": "Failed to create asset", "error": err.Error()}, http.StatusInternalServerError)
+		utils.RespondJSON(w, map[string]string{"status": "error", "message": "Failed to create asset"}, http.StatusInternalServerError)
 		return
 	}
 	if res == nil {
@@ -151,7 +151,9 @@ func (h *AssetHandler) MarkAssetUploaded(w http.ResponseWriter, r *http.Request)
 		h.logger.Sugar().Errorf("Failed to mark asset uploaded: %v", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "Failed to mark asset uploaded")
-		utils.RespondJSON(w, map[string]string{"status": "error", "message": "Failed to mark asset uploaded", "error": err.Error()}, http.StatusInternalServerError)
+		// Typed app errors (e.g. NotFound for cross-tenant/absent assets) map to
+		// their status; everything else falls back to 500.
+		utils.WriteErrorResponse(w, err)
 		return
 	}
 

@@ -22,17 +22,17 @@ class TestS3PublicEndpoint(unittest.TestCase):
 
     def test_public_url_uses_public_endpoint(self):
         st = self._make("http://minio:9000", "http://localhost:9000")
-        url = st.public_url("media/processed/abc/thumbnail.webp")
+        url = st.public_url("media/tenant-abc/processed/abc/thumbnail.webp")
         self.assertEqual(
-            url, "http://localhost:9000/mpiper/media/processed/abc/thumbnail.webp"
+            url, "http://localhost:9000/mpiper/media/tenant-abc/processed/abc/thumbnail.webp"
         )
         # Internal I/O still targets the private endpoint.
         self.assertEqual(st.client.meta.endpoint_url, "http://minio:9000")
 
     def test_public_url_falls_back_to_internal_when_unset(self):
         st = self._make("http://minio:9000", None)
-        url = st.public_url("media/raw/xyz")
-        self.assertEqual(url, "http://minio:9000/mpiper/media/raw/xyz")
+        url = st.public_url("media/tenant-xyz/raw/xyz")
+        self.assertEqual(url, "http://minio:9000/mpiper/media/tenant-xyz/raw/xyz")
 
     def test_bucket_config_defaults_public_to_internal(self, ):
         import os

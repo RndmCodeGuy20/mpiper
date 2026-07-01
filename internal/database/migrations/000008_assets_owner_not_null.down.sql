@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_assets_owner;
+
+ALTER TABLE assets ALTER COLUMN owner_id DROP NOT NULL;

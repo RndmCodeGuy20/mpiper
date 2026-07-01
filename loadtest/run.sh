@@ -18,8 +18,8 @@
 #   WORKER_CPUS=4 MAX_CONCURRENT_JOBS=8 WEBHOOK_CONCURRENCY=10 docker compose … up -d --force-recreate worker api
 #   ./loadtest/run.sh closed --vus 20 --duration 2m && ./loadtest/run.sh capture "AFTER"
 #
-# Requires on the host: k6 (brew install k6), python3 with `cryptography`
-# (only to mint the AES-GCM auth token), and the stack up with the
+# Requires on the host: k6 (brew install k6), docker (to seed an API key into
+# the containerized Postgres), python3 (stdlib only), and the stack up with the
 # observability overlay (so Prometheus remote-write is enabled).
 set -euo pipefail
 
@@ -96,17 +96,13 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# --- Mint an auth token (matches scripts/demo-e2e.sh / README) -----------
-ENCRYPTION_KEY="${ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef}"
-K6_TOKEN="$(ENCRYPTION_KEY="$ENCRYPTION_KEY" python3 - <<'PY'
-import base64, os
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-key = os.environ["ENCRYPTION_KEY"].encode()
-nonce = os.urandom(12)
-ct = AESGCM(key).encrypt(nonce, b"demo-user", None)
-print(base64.urlsafe_b64encode(nonce + ct).rstrip(b"=").decode())
-PY
-)"
+# --- Mint an API key (matches scripts/demo-e2e.sh / README) --------------
+# Seeds a scoped key directly into the containerized Postgres; no AES token.
+# shellcheck source=/dev/null
+. "$REPO_ROOT/scripts/_apikey.sh"
+LOADTEST_TENANT="${LOADTEST_TENANT:-loadtest}"
+K6_TOKEN="$(mint_api_key "$LOADTEST_TENANT")"
+[ -n "$K6_TOKEN" ] || { echo "failed to mint API key" >&2; exit 1; }
 export K6_TOKEN BASE_URL
 export FIXTURE_PATH="$REPO_ROOT/$FIXTURE"
 

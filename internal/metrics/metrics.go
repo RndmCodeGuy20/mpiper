@@ -37,6 +37,11 @@ type Metrics struct {
 	AssetProcessingDuration metric.Float64Histogram
 	AssetSizeBytes          metric.Int64Histogram
 
+	// TenantThrottleTotal counts per-tenant edge rejections. The only label is
+	// a low-cardinality reason (rate_limit | quota) — tenant id is deliberately
+	// excluded to keep metric cardinality bounded.
+	TenantThrottleTotal metric.Int64Counter
+
 	StorageOperationDuration metric.Float64Histogram
 	StorageOperationTotal    metric.Int64Counter
 	StorageOperationErrors   metric.Int64Counter
@@ -289,6 +294,11 @@ func initBusinessMetrics(m *Metrics, meter metric.Meter, logger *zap.Logger) {
 		metric.WithDescription("Size of assets in bytes"), metric.WithUnit("By"))
 	if err != nil {
 		logger.Sugar().Fatalf("Failed to create asset size histogram: %v", err)
+	}
+	m.TenantThrottleTotal, err = meter.Int64Counter("tenant.throttle.total",
+		metric.WithDescription("Per-tenant edge rejections (rate limit / quota)"), metric.WithUnit("{rejection}"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create tenant throttle counter: %v", err)
 	}
 }
 

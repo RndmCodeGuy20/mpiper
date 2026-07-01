@@ -49,6 +49,7 @@ def encode_image(img: Image.Image, fmt: str, quality: int = 80) -> bytes:
 
 def process_image_file(
     asset_id: str,
+    owner_id: str,
     local_raw_path: str,
     content_hash: str,
     pg_pool,
@@ -94,7 +95,7 @@ def process_image_file(
                 span.set_attribute("variant.height", out_img.height)
                 span.set_attribute("variant.size_bytes", len(data))
 
-                key = f"media/processed/{asset_id}/{role}.{v['format']}"
+                key = f"media/{owner_id}/processed/{asset_id}/{role}.{v['format']}"
                 storage.upload_bytes(key, data, content_type=f"image/{v['format']}")
                 url = storage.public_url(key)
 

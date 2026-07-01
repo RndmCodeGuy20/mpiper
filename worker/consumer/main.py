@@ -58,7 +58,11 @@ def main():
 
     if cfg.auto_migrate:
         logger.info("AUTO_MIGRATE=true: running migrations")
-        run_migrations(dsn, migrations_dir=cfg.migrations_dir)
+        run_migrations(
+            dsn,
+            migrations_dir=cfg.migrations_dir,
+            allow_destructive=cfg.migration_allow_destructive,
+        )
         logger.info("Migrations applied successfully")
 
     # Size the DB pool to the worker concurrency. Each in-flight job holds at

@@ -11,8 +11,8 @@ brew install k6          # macOS
 # or see https://grafana.com/docs/k6/latest/set-up/install-k6/
 ```
 
-`run.sh` also needs `python3` with the `cryptography` package on the host (used
-only to mint the AES-GCM auth token).
+`run.sh` also needs `docker` (to seed a scoped API key into the containerized
+Postgres) and a stdlib `python3` on the host.
 
 ## Prerequisites
 

@@ -129,6 +129,9 @@ class WorkerConfig:
     log_level: str
     auto_migrate: bool
     migrations_dir: str
+    # migration_allow_destructive gates versions 7 and 8 which drop or alter
+    # existing user data. Must be true on first bootstrap of a fresh database.
+    migration_allow_destructive: bool = False
     consumer_group: str = "worker-group"
     max_concurrent_jobs: int = 5
     job_poll_interval: int = 10
@@ -167,6 +170,7 @@ class WorkerConfig:
             consumer_group=os.getenv("CONSUMER_GROUP", "worker-group"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             auto_migrate=os.getenv("AUTO_MIGRATE", "false").lower() == "true",
+            migration_allow_destructive=os.getenv("MIGRATION_ALLOW_DESTRUCTIVE", "false").lower() == "true",
             migrations_dir=os.getenv("MIGRATIONS_DIR", default_migrations_dir),
         )
 

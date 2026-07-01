@@ -42,7 +42,7 @@ class TestPipelineStageSpans(unittest.TestCase):
     def test_image_dispatch_emits_stage_spans(
         self, _exists, mock_img, _hash, _ext
     ):
-        asset_row = ("a1", "image", "uploaded", "u", "image/jpeg", None)
+        asset_row = ("a1", "image", "uploaded", "u", "image/jpeg", None, "tenant-1")
         pg = self._pg_pool_returning(asset_row)
         storage = MagicMock()
         cfg = MagicMock()
@@ -64,7 +64,7 @@ class TestPipelineStageSpans(unittest.TestCase):
         self, _exists, mock_img, mock_dedup, _hash, _ext
     ):
         mock_dedup.return_value = processor.DedupResult.NO_DUPLICATE
-        asset_row = ("a1", "image", "uploaded", "u", "image/jpeg", None)
+        asset_row = ("a1", "image", "uploaded", "u", "image/jpeg", None, "tenant-1")
         pg = self._pg_pool_returning(asset_row)
 
         processor.process_asset_dispatch("a1", pg, MagicMock(), MagicMock(temp_dir="/tmp"))

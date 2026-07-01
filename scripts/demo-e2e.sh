@@ -17,9 +17,9 @@
 #
 #   ./scripts/demo-e2e.sh
 #
-# Requirements on the host: bash, curl, jq, docker, and a python3 with the
-# `cryptography` package (used only to mint the auth token, matching
-# pkg/utils/crypt.go). Override defaults via env vars (API, ENCRYPTION_KEY, …).
+# Requirements on the host: bash, curl, jq, docker, and a python3 (stdlib only —
+# used to mint an API key, matching pkg/utils/apikey.go). Override defaults via
+# env vars (API, …).
 
 set -uo pipefail
 
@@ -27,8 +27,7 @@ set -uo pipefail
 # Configuration
 # ---------------------------------------------------------------------------
 API="${API:-http://localhost:5010}"
-ENCRYPTION_KEY="${ENCRYPTION_KEY:-}"
-USER_ID="${USER_ID:-demo-user}"
+TENANT="${TENANT:-${USER_ID:-demo-user}}"
 WEBHOOK_RECEIVER_URL="${WEBHOOK_RECEIVER_URL:-http://webhook-receiver:8080}"  # internal docker name; reached by the in-container dispatcher
 WEBHOOK_SECRET="${WEBHOOK_SECRET:-demo-webhook-secret}"
 PG_CONTAINER="${PG_CONTAINER:-mpiper-postgres}"
@@ -71,22 +70,20 @@ for bin in curl jq docker; do
   command -v "$bin" >/dev/null 2>&1 || die "'$bin' is required but not installed."
 done
 
-# Pick a python3 that can import cryptography (for token minting).
+# Pick a python3 (stdlib only — used to mint an API key).
 PYTHON_BIN=""
 for cand in python3 python; do
-  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import cryptography" >/dev/null 2>&1; then
+  if command -v "$cand" >/dev/null 2>&1; then
     PYTHON_BIN="$cand"; break
   fi
 done
-[ -n "$PYTHON_BIN" ] || die "Need a python3 with the 'cryptography' package on PATH (pip install cryptography)."
+[ -n "$PYTHON_BIN" ] || die "Need a python3 on PATH."
 info "Using python: $(command -v "$PYTHON_BIN")"
 
-# Resolve the encryption key. Prefer the env var; otherwise read it from .env.local.
-if [ -z "$ENCRYPTION_KEY" ] && [ -f "$ROOT_DIR/.env.local" ]; then
-  ENCRYPTION_KEY="$(grep -E '^ENCRYPTION_KEY=' "$ROOT_DIR/.env.local" | head -1 | cut -d= -f2-)"
-fi
-[ -n "$ENCRYPTION_KEY" ] || die "ENCRYPTION_KEY not set and not found in .env.local."
-[ "${#ENCRYPTION_KEY}" -eq 32 ] || die "ENCRYPTION_KEY must be exactly 32 bytes (got ${#ENCRYPTION_KEY})."
+# API-key minting helper (seeds a key directly into the containerized Postgres).
+# shellcheck source=/dev/null
+. "$ROOT_DIR/scripts/_apikey.sh"
+APIKEY_PYTHON_BIN="$PYTHON_BIN"
 
 [ -f "$IMAGE_FILE" ] || die "Image fixture not found: $IMAGE_FILE"
 [ -f "$VIDEO_FILE" ] || die "Video fixture not found: $VIDEO_FILE (generate with ffmpeg or set VIDEO_FILE)."
@@ -120,26 +117,14 @@ fi
 # ---------------------------------------------------------------------------
 psql_q() { docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc "$1" 2>/dev/null; }
 
-mint_token() {
-  ENCRYPTION_KEY="$ENCRYPTION_KEY" USER_ID="$USER_ID" "$PYTHON_BIN" - <<'PY'
-import base64, os
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-key = os.environ["ENCRYPTION_KEY"].encode()
-uid = os.environ["USER_ID"].encode()
-nonce = os.urandom(12)
-ct = AESGCM(key).encrypt(nonce, uid, None)
-print(base64.urlsafe_b64encode(nonce + ct).rstrip(b"=").decode())
-PY
-}
-
 # ---------------------------------------------------------------------------
-# Auth token + webhook registration
+# Auth (API key) + webhook registration
 # ---------------------------------------------------------------------------
-step "Mint auth token (user=$USER_ID)"
-TOKEN="$(mint_token)" || die "token generation failed"
-[ -n "$TOKEN" ] || die "empty token"
+step "Mint API key (tenant=$TENANT)"
+TOKEN="$(mint_api_key "$TENANT")" || die "api key minting failed"
+[ -n "$TOKEN" ] || die "empty api key"
 AUTH="Authorization: Bearer $TOKEN"
-pass "Token minted (${TOKEN:0:16}…)"
+pass "API key minted (${TOKEN:0:16}…)"
 
 step "Register webhook"
 REG_RESP="$(curl -fsS -X POST "$API/api/v1/webhooks" \

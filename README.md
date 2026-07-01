@@ -95,12 +95,15 @@ DB_PASSWORD=your_password
 DB_NAME=mpiper
 DB_SSL_MODE=false
 AUTO_MIGRATE=true            # run embedded SQL migrations on startup
+MIGRATION_ALLOW_DESTRUCTIVE=true   # required on first bootstrap — see warning below
 
 # Redis (transport for the job stream)
 REDIS_CONNECTION_STRING=redis://localhost:6379/0
 
 # Security (must be exactly 32 bytes)
 ENCRYPTION_KEY=change_me_to_a_32_byte_secret____
+# Separate 32-byte key for webhook secrets (falls back to ENCRYPTION_KEY if unset)
+WEBHOOK_ENCRYPTION_KEY=change_me_to_a_diff_32_byte_secret
 
 # Storage — pick a provider
 BUCKET_PROVIDER=gcs          # gcs | s3
@@ -144,7 +147,17 @@ WEBHOOK_MAX_ATTEMPTS=5
 
 ### 3. Set Up the Database
 
-Migrations run automatically on startup when `AUTO_MIGRATE=true` — both the Go server and the Python worker apply the embedded SQL migrations. To apply them manually instead:
+Migrations run automatically on startup when `AUTO_MIGRATE=true` — both the Go server and the Python worker apply the embedded SQL migrations.
+
+> **Destructive migrations are gated.** Versions `000007_split_webhook_key` and
+> `000008_assets_owner_not_null` drop or alter existing user data
+> (`webhook_registrations`, `assets.owner_id`). Both runners refuse to apply
+> them unless `MIGRATION_ALLOW_DESTRUCTIVE=true` is set. Set it for local
+> bootstrap on a fresh database, but **never** set it on a database that
+> already contains production data — apply those migrations by hand and review
+> the SQL first.
+
+To apply them manually instead:
 
 ```bash
 createdb mpiper
@@ -183,21 +196,19 @@ python -m worker               # worker
 
 ### 6. Test the API
 
-All `/api/v1` routes require a Bearer token — an AES-256-GCM token carrying a
-user id, signed with `ENCRYPTION_KEY` (see [`pkg/utils/crypt.go`](pkg/utils/crypt.go)).
-Mint one for local testing:
+All `/api/v1` routes require a Bearer **API key** — a scoped, revocable key
+(`mp_<prefix>_<secret>`) stored SHA-256-hashed at rest (see
+[`pkg/utils/apikey.go`](pkg/utils/apikey.go)). Mint one for a tenant with the
+CLI (it prints the key **once**):
 
 ```bash
-TOKEN=$(python3 - <<'PY'
-import base64, os
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-key = b"change_me_to_a_32_byte_secret____"   # your 32-byte ENCRYPTION_KEY
-nonce = os.urandom(12)
-ct = AESGCM(key).encrypt(nonce, b"demo-user", None)
-print(base64.urlsafe_b64encode(nonce + ct).rstrip(b"=").decode())
-PY
-)
+TOKEN="$(go run ./cmd/mint-api-key --tenant demo-user)"
+# optional: --expires 720h  --scopes assets:write,webhooks:write
 ```
+
+> The CLI connects to the database using your environment config (`.env.local`
+> in development). For the fully containerized demo, the bundled scripts seed a
+> key directly into the running Postgres — see **Run the demo** below.
 
 Request a presigned upload URL:
 
@@ -291,6 +302,34 @@ All `/api/v1` routes require an `Authorization: Bearer <token>` header (see
 > For MinIO it is `S3_PUBLIC_ENDPOINT_URL` (the client-facing endpoint), so the
 > URL is reachable from wherever the client runs — see [Storage Providers](#storage-providers).
 
+#### Idempotency
+
+`POST /storage/presign` (and the `complete` endpoint) accept an optional
+`Idempotency-Key` header so client retries don't create duplicate assets. The
+first request for a given key runs normally and its response is stored
+(per-tenant, 24h TTL by default — `IDEMPOTENCY_TTL`); a retry with the **same
+key and same body** replays the stored response verbatim (with
+`Idempotent-Replayed: true`). Reusing a key with a **different body** returns
+`422`, and a duplicate that arrives while the first is still in flight returns
+`409`.
+
+```bash
+curl -X POST http://localhost:5010/api/v1/storage/presign \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: 9f1c0b2a-..." \
+  -H "Content-Type: application/json" \
+  -d '{ "fileName": "image.jpg", "contentType": "image/jpeg", "size": 1024000 }'
+```
+
+#### Rate limits & quotas
+
+Presign is rate-limited **per tenant** (token bucket, `TENANT_RATE_LIMIT_RPS`
+sustained / `TENANT_RATE_LIMIT_BURST` burst); exceeding it returns `429` with a
+`Retry-After` header. An optional per-tenant asset quota
+(`TENANT_ASSET_QUOTA`, `0` = unlimited) returns `403` once a tenant is at its
+cap. Limits are isolated per tenant — one tenant hitting its limit does not
+affect another.
+
 ### Mark an asset complete (enqueue processing)
 
 **Endpoint:** `GET /api/v1/assets/{assetId}/complete`
@@ -352,8 +391,8 @@ produce variants, fetches a variant back over HTTP, and asserts the
 `job.starting → job.started → job.done` webhooks were delivered. It prints a
 PASS/FAIL summary and exits non-zero on any failure.
 
-Requirements on the host: `bash`, `curl`, `jq`, `docker`, and a `python3` with
-the `cryptography` package (used only to mint the auth token).
+Requirements on the host: `bash`, `curl`, `jq`, `docker`, and a `python3`
+(stdlib only — used to mint an API key seeded into the containerized Postgres).
 
 ## 🔧 Development
 

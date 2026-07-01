@@ -148,7 +148,7 @@ def process_asset_dispatch(
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT asset_id, type, status, original_url, mime_type, content_hash
+                SELECT asset_id, type, status, original_url, mime_type, content_hash, owner_id
                 FROM assets
                 WHERE asset_id = %s
                 """,
@@ -158,7 +158,10 @@ def process_asset_dispatch(
             if not row:
                 raise RuntimeError(f"Asset not found: {asset_id}")
 
-            _, typ, status, original_url, mime_type, content_hash = row
+            _, typ, status, original_url, mime_type, content_hash, owner_id = row
+
+        if not owner_id:
+            raise RuntimeError(f"Asset has no owner: {asset_id}")
 
         span.set_attribute("asset.type", typ or "unknown")
         span.set_attribute("asset.status", status or "unknown")
@@ -182,7 +185,7 @@ def process_asset_dispatch(
                 )
 
             # Download raw file
-            raw_key = f"media/raw/{asset_id}"
+            raw_key = f"media/{owner_id}/raw/{asset_id}"
             tmp_dir = cfg.temp_dir
             os.makedirs(tmp_dir, exist_ok=True)
             local_raw_file = os.path.join(
@@ -222,11 +225,11 @@ def process_asset_dispatch(
             proc_start = time.time()
             if typ == "image":
                 process_image_file(
-                    asset_id, local_raw_file, content_hash, pg_pool, storage, cfg
+                    asset_id, owner_id, local_raw_file, content_hash, pg_pool, storage, cfg
                 )
             elif typ == "video":
                 process_video_file(
-                    asset_id, local_raw_file, content_hash, pg_pool, storage, cfg
+                    asset_id, owner_id, local_raw_file, content_hash, pg_pool, storage, cfg
                 )
             else:
                 raise ValueError(f"Unknown asset type: {typ}")

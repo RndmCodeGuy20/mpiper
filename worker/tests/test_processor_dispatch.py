@@ -29,8 +29,8 @@ class TestDispatchFailureDoesNotTouchAssetState(unittest.TestCase):
     ):
         mock_process_image.side_effect = RuntimeError("boom")
 
-        # (asset_id, type, status, original_url, mime_type, content_hash)
-        asset_row = ("asset-1", "image", "uploaded", "gs://raw/asset-1", "image/jpeg", None)
+        # (asset_id, type, status, original_url, mime_type, content_hash, owner_id)
+        asset_row = ("asset-1", "image", "uploaded", "gs://raw/asset-1", "image/jpeg", None, "tenant-1")
         pg_pool, cursor = self._make_pg_pool(asset_row)
         storage = MagicMock()
         cfg = MagicMock()

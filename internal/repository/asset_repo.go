@@ -93,8 +93,9 @@ func ToAssetTypeFromMimeType(mimeType string) AssetType {
 type AssetRepository interface {
 	CreateAsset(ctx context.Context, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string, ownerID string) error
 	CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string, ownerID string) error
-	MarkAssetUploadedTx(ctx context.Context, tx *sql.Tx, id uuid.UUID) (bool, error)
+	MarkAssetUploadedTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, tenantID string) (MarkResult, error)
 	InsertProcessAssetJobTx(ctx context.Context, tx *sql.Tx, assetID uuid.UUID) (*int64, error)
+	CountByOwner(ctx context.Context, tenantID string) (int64, error)
 	GetDB() *sqlx.DB
 }
 
@@ -110,6 +111,17 @@ func NewAssetRepository(db *sqlx.DB, logger *zap.Logger, m *metrics.Metrics) Ass
 
 func (r *assetRepo) GetDB() *sqlx.DB {
 	return r.db
+}
+
+// CountByOwner returns how many assets the tenant currently owns — used for
+// per-tenant usage quota enforcement.
+func (r *assetRepo) CountByOwner(ctx context.Context, tenantID string) (int64, error) {
+	var count int64
+	err := r.db.GetContext(ctx, &count, `SELECT COUNT(*) FROM assets WHERE owner_id = $1`, tenantID)
+	if err != nil {
+		return 0, appErrors.NewInternalServerError("Could not count tenant assets", err)
+	}
+	return count, nil
 }
 
 func (r *assetRepo) CreateAsset(ctx context.Context, id uuid.UUID, url string, size int64, fileType AssetType, mimeType string, ownerID string) error {
@@ -192,29 +204,58 @@ func (r *assetRepo) CreateAssetTx(ctx context.Context, tx *sql.Tx, id uuid.UUID,
 	return nil
 }
 
-func (r *assetRepo) MarkAssetUploadedTx(ctx context.Context, tx *sql.Tx, id uuid.UUID) (bool, error) {
-	query := `UPDATE assets SET status = $1, updated_at = NOW() WHERE asset_id = $2 AND status = 'uploading';`
-	res, err := tx.ExecContext(
-		ctx,
-		query,
-		StatusUploaded,
-		id,
-	)
+// MarkResult is the outcome of attempting to mark an asset uploaded, scoped to
+// the calling tenant.
+type MarkResult int
+
+const (
+	// MarkUpdated: the asset transitioned uploading -> uploaded.
+	MarkUpdated MarkResult = iota
+	// MarkAlreadyUploaded: the asset exists and is owned by the tenant, but was
+	// not in the 'uploading' state (idempotent no-op).
+	MarkAlreadyUploaded
+	// MarkNotFound: no asset with that id is owned by the tenant. Callers map
+	// this to 404 so a tenant cannot probe another tenant's asset ids (IDOR).
+	MarkNotFound
+)
+
+func (r *assetRepo) MarkAssetUploadedTx(ctx context.Context, tx *sql.Tx, id uuid.UUID, tenantID string) (MarkResult, error) {
+	// Owner-scoped update: the asset only transitions if it belongs to the
+	// caller. This is the IDOR guard — without owner_id in the WHERE clause a
+	// tenant could complete another tenant's asset by id.
+	query := `UPDATE assets SET status = $1, updated_at = NOW()
+			  WHERE asset_id = $2 AND owner_id = $3 AND status = 'uploading';`
+	res, err := tx.ExecContext(ctx, query, StatusUploaded, id, tenantID)
 	if err != nil {
 		r.logger.Sugar().Errorf("Failed to mark asset as uploaded in transaction: %v", err)
-		return false, appErrors.NewInternalServerError("Could not update row in transaction", err)
+		return MarkNotFound, appErrors.NewInternalServerError("Could not update row in transaction", err)
 	}
 
 	rowsAffected, err := res.RowsAffected()
 	if err != nil {
 		r.logger.Sugar().Errorf("Failed to get rows affected: %v", err)
-		return false, appErrors.NewInternalServerError("Could not get rows affected in transaction", err)
+		return MarkNotFound, appErrors.NewInternalServerError("Could not get rows affected in transaction", err)
 	}
 
-	if rowsAffected == 0 {
-		return false, nil // No rows updated, asset might not be in 'uploading' state
+	if rowsAffected > 0 {
+		return MarkUpdated, nil
 	}
-	return true, nil // Asset marked as uploaded successfully
+
+	// Zero rows updated: disambiguate "exists and owned but not uploading"
+	// (idempotent success) from "absent or not owned" (404). The existence
+	// probe is also owner-scoped, so cross-tenant ids are reported as not found.
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM assets WHERE asset_id = $1 AND owner_id = $2)`,
+		id, tenantID,
+	).Scan(&exists); err != nil {
+		r.logger.Sugar().Errorf("Failed to check asset ownership: %v", err)
+		return MarkNotFound, appErrors.NewInternalServerError("Could not verify asset ownership", err)
+	}
+	if exists {
+		return MarkAlreadyUploaded, nil
+	}
+	return MarkNotFound, nil
 }
 
 func (r *assetRepo) InsertProcessAssetJobTx(ctx context.Context, tx *sql.Tx, assetID uuid.UUID) (*int64, error) {

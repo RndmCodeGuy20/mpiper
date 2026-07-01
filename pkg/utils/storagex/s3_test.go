@@ -100,7 +100,7 @@ func TestS3PresignAndPublicURLEndpoints(t *testing.T) {
 		internal = "http://minio:9000"
 		public   = "http://localhost:9000"
 		bucket   = "mpiper"
-		key      = "media/raw/abc"
+		key      = "media/tenant-abc/raw/abc"
 	)
 
 	t.Run("public endpoint set: presign + PublicURL use public host", func(t *testing.T) {
