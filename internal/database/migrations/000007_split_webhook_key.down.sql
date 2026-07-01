@@ -1,0 +1,1 @@
+-- No-op: truncated webhook registrations cannot be restored.

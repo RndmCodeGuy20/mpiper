@@ -10,13 +10,14 @@ A lightweight, scalable media processing pipeline built with Go and Python. MPip
 ## 🌟 Features
 
 - **RESTful API Server** - High-performance Go server built with Chi router
-- **Asynchronous Processing** - Redis Streams job queue for scalable media processing
+- **Concurrent Processing** - Redis Streams job queue with a **bounded worker pool** (`MAX_CONCURRENT_JOBS`) for parallel media processing — ~2.4× throughput vs single-threaded in load tests
+- **Resilient delivery** - **`XAUTOCLAIM`** consumer-group recovery reclaims messages from dead workers, and poison/over-retried messages are routed to a **dead-letter stream** (`media:jobs:dlq`) instead of being dropped
 - **Pluggable Storage** - GCS and S3/MinIO (any S3-compatible store) behind a single provider abstraction, selected by config
 - **Image Processing** - Automatic generation of optimized, content-addressed image variants (resize, re-encode, format conversion)
 - **Video Processing** - Poster generation, 720p transcode, and preview clips
 - **Database-Backed** - PostgreSQL as the durable source of truth for assets, variants, and jobs
-- **Webhooks** - Registration and delivery tracking tables for outbound event notifications
-- **Observability** - OpenTelemetry tracing + metrics on the API, Prometheus metrics on the worker, with a bundled Grafana/Tempo/Loki/Prometheus stack
+- **Webhooks** - Registration + **concurrent** signed delivery (`WEBHOOK_CONCURRENCY`) with HMAC signatures, exponential-backoff retries, and delivery tracking
+- **Observability** - OpenTelemetry tracing + metrics on the API, Prometheus metrics on the worker, with a bundled Grafana/Tempo/Loki/Prometheus stack and a host-run k6 load harness
 - **Docker & Kubernetes Ready** - Multi-stage images and manifests for containerized deployment
 
 ## 🏗️ Architecture
@@ -46,9 +47,14 @@ Two-service pipeline communicating over **Redis Streams** (`media:jobs`). Postgr
 2. Go server creates the asset + job and returns a presigned upload URL
 3. Client uploads the raw file directly to object storage
 4. Client marks the asset uploaded; the job is enqueued on the Redis stream
-5. Python worker consumes the job, processes media (resize, transcode, optimize)
+5. The Python worker consumes jobs **concurrently** (a bounded pool of `MAX_CONCURRENT_JOBS`), processing media (resize, transcode, optimize)
 6. Variants are written back to object storage (deduplicated by content hash)
 7. Database is updated with asset status and variant metadata
+
+**Resilience:** the worker uses Redis Streams consumer-group semantics — each
+message is acked only after its job succeeds, dead-consumer messages are reclaimed
+with `XAUTOCLAIM`, and poison/over-retried messages are moved to a dead-letter
+stream (`media:jobs:dlq`) for inspection/replay rather than being dropped.
 
 ## 📋 Prerequisites
 
@@ -89,12 +95,15 @@ DB_PASSWORD=your_password
 DB_NAME=mpiper
 DB_SSL_MODE=false
 AUTO_MIGRATE=true            # run embedded SQL migrations on startup
+MIGRATION_ALLOW_DESTRUCTIVE=true   # required on first bootstrap — see warning below
 
 # Redis (transport for the job stream)
 REDIS_CONNECTION_STRING=redis://localhost:6379/0
 
 # Security (must be exactly 32 bytes)
 ENCRYPTION_KEY=change_me_to_a_32_byte_secret____
+# Separate 32-byte key for webhook secrets (falls back to ENCRYPTION_KEY if unset)
+WEBHOOK_ENCRYPTION_KEY=change_me_to_a_diff_32_byte_secret
 
 # Storage — pick a provider
 BUCKET_PROVIDER=gcs          # gcs | s3
@@ -117,14 +126,38 @@ S3_PUBLIC_ENDPOINT_URL=http://localhost:9000
 # Worker
 STREAM_NAME=media:jobs
 JOB_POLL_INTERVAL=1
-MAX_CONCURRENT_JOBS=5
+MAX_CONCURRENT_JOBS=5         # bounded worker-pool size; set ≈ CPU cores per worker
+RECOVERY_MIN_IDLE_MS=120000  # idle threshold before XAUTOCLAIM reclaims a stuck message
+STREAM_DLQ_NAME=media:jobs:dlq
+SHUTDOWN_DRAIN_TIMEOUT=30     # seconds to drain in-flight jobs on SIGTERM
+
+# Webhooks
+WEBHOOK_CONCURRENCY=10        # concurrent signed deliveries per dispatcher tick
+WEBHOOK_BATCH_SIZE=50
+WEBHOOK_POLL_INTERVAL=2s
+WEBHOOK_MAX_ATTEMPTS=5
 ```
+
+> **Tuning `MAX_CONCURRENT_JOBS`:** media work is partly CPU-bound (Pillow/ffmpeg),
+> so set it close to the worker's CPU-core count. Going much higher *oversubscribes*
+> the cores and reduces throughput — load tests showed `mcj=8` on 4 cores was slower
+> than `mcj=4`. Size worker memory to the pool, not the single-threaded baseline.
 
 > The worker reads the same `S3_*` variables as the Go server (falling back to `BUCKET_*`), so one `.env` drives both services.
 
 ### 3. Set Up the Database
 
-Migrations run automatically on startup when `AUTO_MIGRATE=true` — both the Go server and the Python worker apply the embedded SQL migrations. To apply them manually instead:
+Migrations run automatically on startup when `AUTO_MIGRATE=true` — both the Go server and the Python worker apply the embedded SQL migrations.
+
+> **Destructive migrations are gated.** Versions `000007_split_webhook_key` and
+> `000008_assets_owner_not_null` drop or alter existing user data
+> (`webhook_registrations`, `assets.owner_id`). Both runners refuse to apply
+> them unless `MIGRATION_ALLOW_DESTRUCTIVE=true` is set. Set it for local
+> bootstrap on a fresh database, but **never** set it on a database that
+> already contains production data — apply those migrations by hand and review
+> the SQL first.
+
+To apply them manually instead:
 
 ```bash
 createdb mpiper
@@ -163,21 +196,19 @@ python -m worker               # worker
 
 ### 6. Test the API
 
-All `/api/v1` routes require a Bearer token — an AES-256-GCM token carrying a
-user id, signed with `ENCRYPTION_KEY` (see [`pkg/utils/crypt.go`](pkg/utils/crypt.go)).
-Mint one for local testing:
+All `/api/v1` routes require a Bearer **API key** — a scoped, revocable key
+(`mp_<prefix>_<secret>`) stored SHA-256-hashed at rest (see
+[`pkg/utils/apikey.go`](pkg/utils/apikey.go)). Mint one for a tenant with the
+CLI (it prints the key **once**):
 
 ```bash
-TOKEN=$(python3 - <<'PY'
-import base64, os
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-key = b"change_me_to_a_32_byte_secret____"   # your 32-byte ENCRYPTION_KEY
-nonce = os.urandom(12)
-ct = AESGCM(key).encrypt(nonce, b"demo-user", None)
-print(base64.urlsafe_b64encode(nonce + ct).rstrip(b"=").decode())
-PY
-)
+TOKEN="$(go run ./cmd/mint-api-key --tenant demo-user)"
+# optional: --expires 720h  --scopes assets:write,webhooks:write
 ```
+
+> The CLI connects to the database using your environment config (`.env.local`
+> in development). For the fully containerized demo, the bundled scripts seed a
+> key directly into the running Postgres — see **Run the demo** below.
 
 Request a presigned upload URL:
 
@@ -271,6 +302,34 @@ All `/api/v1` routes require an `Authorization: Bearer <token>` header (see
 > For MinIO it is `S3_PUBLIC_ENDPOINT_URL` (the client-facing endpoint), so the
 > URL is reachable from wherever the client runs — see [Storage Providers](#storage-providers).
 
+#### Idempotency
+
+`POST /storage/presign` (and the `complete` endpoint) accept an optional
+`Idempotency-Key` header so client retries don't create duplicate assets. The
+first request for a given key runs normally and its response is stored
+(per-tenant, 24h TTL by default — `IDEMPOTENCY_TTL`); a retry with the **same
+key and same body** replays the stored response verbatim (with
+`Idempotent-Replayed: true`). Reusing a key with a **different body** returns
+`422`, and a duplicate that arrives while the first is still in flight returns
+`409`.
+
+```bash
+curl -X POST http://localhost:5010/api/v1/storage/presign \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: 9f1c0b2a-..." \
+  -H "Content-Type: application/json" \
+  -d '{ "fileName": "image.jpg", "contentType": "image/jpeg", "size": 1024000 }'
+```
+
+#### Rate limits & quotas
+
+Presign is rate-limited **per tenant** (token bucket, `TENANT_RATE_LIMIT_RPS`
+sustained / `TENANT_RATE_LIMIT_BURST` burst); exceeding it returns `429` with a
+`Retry-After` header. An optional per-tenant asset quota
+(`TENANT_ASSET_QUOTA`, `0` = unlimited) returns `403` once a tenant is at its
+cap. Limits are isolated per tenant — one tenant hitting its limit does not
+affect another.
+
 ### Mark an asset complete (enqueue processing)
 
 **Endpoint:** `GET /api/v1/assets/{assetId}/complete`
@@ -299,8 +358,9 @@ Register an endpoint to receive processing-lifecycle events.
 
 Deliveries are signed: each POST carries an `X-Webhook-Signature: sha256=<hmac>`
 header computed over the JSON body using your registration `secret` (stored
-encrypted at rest). A background dispatcher delivers pending events with
-exponential-backoff retries and tracks them in the `webhook_deliveries` table.
+encrypted at rest). A background dispatcher delivers pending events **concurrently**
+(bounded by `WEBHOOK_CONCURRENCY`) with exponential-backoff retries and tracks them
+in the `webhook_deliveries` table.
 
 ```bash
 curl -X POST http://localhost:5010/api/v1/webhooks \
@@ -331,8 +391,8 @@ produce variants, fetches a variant back over HTTP, and asserts the
 `job.starting → job.started → job.done` webhooks were delivered. It prints a
 PASS/FAIL summary and exits non-zero on any failure.
 
-Requirements on the host: `bash`, `curl`, `jq`, `docker`, and a `python3` with
-the `cryptography` package (used only to mint the auth token).
+Requirements on the host: `bash`, `curl`, `jq`, `docker`, and a `python3`
+(stdlib only — used to mint an API key seeded into the containerized Postgres).
 
 ## 🔧 Development
 
@@ -359,7 +419,7 @@ mpiper/
 │   └── utils/
 │       └── storagex/    # Storage abstraction (GCS, S3/MinIO)
 ├── worker/
-│   ├── consumer/        # Redis Streams consumer + config
+│   ├── consumer/        # Redis Streams consumer (bounded pool, XAUTOCLAIM recovery, DLQ) + config
 │   ├── processing/      # Image/video processing
 │   ├── storage/         # Storage adapters (base ABC, GCS, S3) + factory
 │   └── utils/           # Worker utilities (metrics)
@@ -477,6 +537,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [x] Support for AWS S3 / MinIO storage
 - [x] Webhook delivery with HMAC signing + retry tracking
 - [x] Video transcoding with FFmpeg (poster, 720p, preview)
+- [x] Concurrent worker pool (`MAX_CONCURRENT_JOBS`) — ~2.4× throughput
+- [x] `XAUTOCLAIM` stream recovery + dead-letter stream for poison messages
+- [x] Concurrent webhook delivery (`WEBHOOK_CONCURRENCY`)
+- [x] End-to-end OpenTelemetry tracing, SLOs, Grafana dashboards + k6 load harness
+- [ ] Queue-depth autoscaling (KEDA) — *next*
 - [ ] Support for Azure Blob Storage
 - [ ] Admin dashboard
 - [ ] Batch processing API

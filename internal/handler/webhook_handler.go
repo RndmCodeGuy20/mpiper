@@ -35,7 +35,7 @@ func (h *WebhookHandler) Create(w http.ResponseWriter, r *http.Request) {
 	reg, err := h.svc.Create(r.Context(), req.URL, req.Secret, req.Events)
 	if err != nil {
 		h.logger.Warn("webhook create failed", zap.Error(err))
-		utils.RespondJSON(w, map[string]string{"status": "error", "message": err.Error()}, http.StatusBadRequest)
+		utils.WriteErrorResponse(w, err)
 		return
 	}
 
@@ -46,7 +46,7 @@ func (h *WebhookHandler) List(w http.ResponseWriter, r *http.Request) {
 	regs, err := h.svc.List(r.Context())
 	if err != nil {
 		h.logger.Error("webhook list failed", zap.Error(err))
-		utils.RespondJSON(w, map[string]string{"status": "error", "message": err.Error()}, http.StatusInternalServerError)
+		utils.WriteErrorResponse(w, err)
 		return
 	}
 	utils.RespondJSON(w, map[string]interface{}{"status": "success", "data": regs}, http.StatusOK)
@@ -61,11 +61,7 @@ func (h *WebhookHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.Delete(r.Context(), id); err != nil {
-		status := http.StatusInternalServerError
-		if err.Error() == "not found" {
-			status = http.StatusNotFound
-		}
-		utils.RespondJSON(w, map[string]string{"status": "error", "message": err.Error()}, status)
+		utils.WriteErrorResponse(w, err)
 		return
 	}
 

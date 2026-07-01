@@ -94,6 +94,17 @@ type WebhookConfig struct {
 	Timeout      time.Duration
 	MaxAttempts  int
 	Retention    time.Duration
+	Concurrency  int
+}
+
+// QuotaConfig holds per-tenant rate-limit and usage-quota settings.
+type QuotaConfig struct {
+	// RateLimitRPS is the sustained per-tenant request rate (requests/second).
+	RateLimitRPS float64
+	// RateLimitBurst is the per-tenant token-bucket burst size.
+	RateLimitBurst int
+	// AssetQuota is the maximum number of assets a tenant may own. 0 = unlimited.
+	AssetQuota int64
 }
 
 type EnvConfig struct {
@@ -105,11 +116,22 @@ type EnvConfig struct {
 	Storage            StorageConfig
 	Outbox             OutboxConfig
 	Webhook            WebhookConfig
+	Quota              QuotaConfig
 	CORSAllowedOrigins []string
 	LogLevel           string
 	EncryptionKey      string
-	AutoMigrate        bool
-	MaxAssetSizeBytes  int64
+	// WebhookEncryptionKey encrypts webhook secrets at rest, separate from the
+	// auth/EncryptionKey so a leak of one does not compromise the other. Falls
+	// back to EncryptionKey when WEBHOOK_ENCRYPTION_KEY is unset.
+	WebhookEncryptionKey string
+	AutoMigrate          bool
+	// MigrationAllowDestructive gates migration versions 7 and 8 which drop
+	// or alter existing user data. Defaults to false; must be set to true
+	// explicitly on first bootstrap of a fresh database.
+	MigrationAllowDestructive bool
+	MaxAssetSizeBytes         int64
+	// IdempotencyTTL is how long a stored idempotency key/response is replayable.
+	IdempotencyTTL time.Duration
 }
 
 // --- Singleton ---
@@ -184,6 +206,17 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 		)
 	}
 
+	// Webhook secrets are encrypted with their own key, separate from the auth
+	// key. When unset, fall back to ENCRYPTION_KEY for backward compatibility.
+	webhookEncryptionKey := os.Getenv("WEBHOOK_ENCRYPTION_KEY")
+	if webhookEncryptionKey == "" {
+		webhookEncryptionKey = encryptionKey
+	} else if len(webhookEncryptionKey) != 32 {
+		return EnvConfig{}, NewInitializationError(
+			fmt.Sprintf("WEBHOOK_ENCRYPTION_KEY must be exactly 32 bytes for AES-256, got %d", len(webhookEncryptionKey)), nil,
+		)
+	}
+
 	traceSamplingRate := 0.1
 	if raw := os.Getenv("TRACE_SAMPLING_RATE"); raw != "" {
 		if parsed, err := strconv.ParseFloat(raw, 64); err == nil {
@@ -195,6 +228,32 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 	if raw := os.Getenv("MAX_ASSET_SIZE_BYTES"); raw != "" {
 		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
 			maxAssetSize = n
+		}
+	}
+
+	idempotencyTTL := 24 * time.Hour
+	if raw := os.Getenv("IDEMPOTENCY_TTL"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			idempotencyTTL = d
+		}
+	}
+
+	tenantRateRPS := 10.0
+	if raw := os.Getenv("TENANT_RATE_LIMIT_RPS"); raw != "" {
+		if f, err := strconv.ParseFloat(raw, 64); err == nil && f > 0 {
+			tenantRateRPS = f
+		}
+	}
+	tenantRateBurst := 20
+	if raw := os.Getenv("TENANT_RATE_LIMIT_BURST"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			tenantRateBurst = n
+		}
+	}
+	tenantAssetQuota := int64(0) // 0 = unlimited
+	if raw := os.Getenv("TENANT_ASSET_QUOTA"); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n >= 0 {
+			tenantAssetQuota = n
 		}
 	}
 
@@ -258,6 +317,12 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 			webhookRetention = d
 		}
 	}
+	webhookConcurrency := 10
+	if raw := os.Getenv("WEBHOOK_CONCURRENCY"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			webhookConcurrency = n
+		}
+	}
 
 	return EnvConfig{
 		Environment: env,
@@ -299,11 +364,14 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 				PublicEndpointURL: os.Getenv("S3_PUBLIC_ENDPOINT_URL"),
 			},
 		},
-		CORSAllowedOrigins: corsOrigins,
-		LogLevel:           envOr("LOG_LEVEL", "INFO"),
-		EncryptionKey:      encryptionKey,
-		AutoMigrate:        strings.ToLower(os.Getenv("AUTO_MIGRATE")) == "true",
-		MaxAssetSizeBytes:  maxAssetSize,
+		CORSAllowedOrigins:   corsOrigins,
+		LogLevel:             envOr("LOG_LEVEL", "INFO"),
+		EncryptionKey:        encryptionKey,
+		WebhookEncryptionKey: webhookEncryptionKey,
+		AutoMigrate:          strings.ToLower(os.Getenv("AUTO_MIGRATE")) == "true",
+		MigrationAllowDestructive: strings.ToLower(os.Getenv("MIGRATION_ALLOW_DESTRUCTIVE")) == "true",
+		MaxAssetSizeBytes:         maxAssetSize,
+		IdempotencyTTL:       idempotencyTTL,
 		Outbox: OutboxConfig{
 			RelayInterval: outboxRelayInterval,
 			RelayBatch:    outboxRelayBatch,
@@ -316,6 +384,12 @@ func GetEnvConfig(envFile string) (EnvConfig, error) {
 			Timeout:      webhookTimeout,
 			MaxAttempts:  webhookMaxAttempts,
 			Retention:    webhookRetention,
+			Concurrency:  webhookConcurrency,
+		},
+		Quota: QuotaConfig{
+			RateLimitRPS:   tenantRateRPS,
+			RateLimitBurst: tenantRateBurst,
+			AssetQuota:     tenantAssetQuota,
 		},
 	}, nil
 }

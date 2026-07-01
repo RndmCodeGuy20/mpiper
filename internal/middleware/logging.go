@@ -37,6 +37,11 @@ func LoggerMiddleware(l *zap.Logger) func(next http.Handler) http.Handler {
 				zap.String("proto", r.Proto),
 			)
 
+			// Stamp trace_id/span_id from the active span (TracingMiddleware runs
+			// before this) so request logs cross-link to their Tempo trace and
+			// any handler/service using the context logger inherits the IDs.
+			reqLogger = applogger.WithTrace(r.Context(), reqLogger)
+
 			ctx := applogger.WithLogger(r.Context(), reqLogger)
 			r = r.WithContext(ctx)
 

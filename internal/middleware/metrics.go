@@ -32,43 +32,51 @@ func MetricsMiddleware(m *metrics.Metrics) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
-			route := chi.RouteContext(r.Context()).RoutePattern()
-			if route == "" {
-				route = "unknown"
-			}
-
 			wrapped := &metricsResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 
-			attrs := []attribute.KeyValue{
-				attribute.String("http.method", r.Method),
-				attribute.String("http.route", route),
-			}
+			// In-flight gauge: keyed by method only. The route pattern is not yet
+			// known here (chi populates it during routing, after this middleware),
+			// so it would be "unknown"; using it on +1/-1 still nets to zero but
+			// adds no value. Per-route labels are applied post-routing below.
+			inflightAttrs := []attribute.KeyValue{attribute.String("http.method", r.Method)}
 
 			if m != nil {
-				m.HTTPActiveRequests.Add(r.Context(), 1, metric.WithAttributes(attrs...))
-				defer m.HTTPActiveRequests.Add(r.Context(), -1, metric.WithAttributes(attrs...))
+				m.HTTPActiveRequests.Add(r.Context(), 1, metric.WithAttributes(inflightAttrs...))
+				defer m.HTTPActiveRequests.Add(r.Context(), -1, metric.WithAttributes(inflightAttrs...))
 			}
 
 			defer func() {
 				if rec := recover(); rec != nil {
 					wrapped.statusCode = http.StatusInternalServerError
-					recordHTTPMetrics(m, r, wrapped, start, attrs)
+					recordHTTPMetrics(m, r, wrapped, start)
 					panic(rec)
 				}
 			}()
 
 			next.ServeHTTP(wrapped, r)
-			recordHTTPMetrics(m, r, wrapped, start, attrs)
+			recordHTTPMetrics(m, r, wrapped, start)
 		})
 	}
 }
 
-func recordHTTPMetrics(m *metrics.Metrics, r *http.Request, w *metricsResponseWriter, start time.Time, baseAttrs []attribute.KeyValue) {
+func recordHTTPMetrics(m *metrics.Metrics, r *http.Request, w *metricsResponseWriter, start time.Time) {
 	if m == nil {
 		return
 	}
+	// chi populates the matched route pattern during routing, so it is only
+	// available now (after ServeHTTP). Reading it earlier yields "" — the source
+	// of the previous "unknown" http_route label that broke per-route SLOs.
+	route := chi.RouteContext(r.Context()).RoutePattern()
+	if route == "" {
+		route = "unknown"
+	}
+
 	duration := time.Since(start).Seconds()
-	attrs := append(baseAttrs, attribute.Int("http.status_code", w.statusCode))
+	attrs := []attribute.KeyValue{
+		attribute.String("http.method", r.Method),
+		attribute.String("http.route", route),
+		attribute.Int("http.status_code", w.statusCode),
+	}
 
 	m.HTTPRequestDuration.Record(r.Context(), duration, metric.WithAttributes(attrs...))
 	m.HTTPRequestCount.Add(r.Context(), 1, metric.WithAttributes(attrs...))

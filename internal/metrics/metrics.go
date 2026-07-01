@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"database/sql"
 	"runtime"
 	"time"
 
@@ -36,17 +37,25 @@ type Metrics struct {
 	AssetProcessingDuration metric.Float64Histogram
 	AssetSizeBytes          metric.Int64Histogram
 
+	// TenantThrottleTotal counts per-tenant edge rejections. The only label is
+	// a low-cardinality reason (rate_limit | quota) — tenant id is deliberately
+	// excluded to keep metric cardinality bounded.
+	TenantThrottleTotal metric.Int64Counter
+
 	StorageOperationDuration metric.Float64Histogram
 	StorageOperationTotal    metric.Int64Counter
 	StorageOperationErrors   metric.Int64Counter
 
-	DBQueryDuration     metric.Float64Histogram
-	DBQueryTotal        metric.Int64Counter
-	DBQueryErrors       metric.Int64Counter
-	DBConnectionsActive metric.Int64UpDownCounter
-	DBConnectionsIdle   metric.Int64UpDownCounter
-	DBTransactionTotal  metric.Int64Counter
-	DBTransactionErrors metric.Int64Counter
+	DBQueryDuration        metric.Float64Histogram
+	DBQueryTotal           metric.Int64Counter
+	DBQueryErrors          metric.Int64Counter
+	DBConnectionsActive    metric.Int64ObservableGauge
+	DBConnectionsIdle      metric.Int64ObservableGauge
+	DBConnectionsOpen      metric.Int64ObservableGauge
+	DBConnectionsMaxOpen   metric.Int64ObservableGauge
+	DBConnectionsWaitCount metric.Int64ObservableGauge
+	DBTransactionTotal     metric.Int64Counter
+	DBTransactionErrors    metric.Int64Counter
 
 	QueueMessagePublished metric.Int64Counter
 	QueueMessageConsumed  metric.Int64Counter
@@ -80,6 +89,22 @@ func (m *Metrics) RegisterQueueDepthFunc(fn func(context.Context) (int64, error)
 		o.ObserveInt64(m.QueueDepth, n)
 		return nil
 	}, m.QueueDepth)
+	return err
+}
+
+// RegisterDBStatsFunc wires sql.DBStats (connection-pool stats) to the DB
+// connection gauges. fn typically returns db.Stats(). One callback observes all
+// pool gauges from a single stats snapshot so they stay mutually consistent.
+func (m *Metrics) RegisterDBStatsFunc(fn func() sql.DBStats) error {
+	_, err := m.meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		s := fn()
+		o.ObserveInt64(m.DBConnectionsActive, int64(s.InUse))
+		o.ObserveInt64(m.DBConnectionsIdle, int64(s.Idle))
+		o.ObserveInt64(m.DBConnectionsOpen, int64(s.OpenConnections))
+		o.ObserveInt64(m.DBConnectionsMaxOpen, int64(s.MaxOpenConnections))
+		o.ObserveInt64(m.DBConnectionsWaitCount, s.WaitCount)
+		return nil
+	}, m.DBConnectionsActive, m.DBConnectionsIdle, m.DBConnectionsOpen, m.DBConnectionsMaxOpen, m.DBConnectionsWaitCount)
 	return err
 }
 
@@ -146,13 +171,41 @@ func InitMetrics(ctx context.Context, logger *zap.Logger) (*Metrics, func(contex
 
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
+		// 15s export interval (matches the worker) so RED/SLO dashboards stay
+		// responsive under load; the SDK default of 60s lags the 5m rate window.
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(15*time.Second))),
 		sdkmetric.WithView(
 			sdkmetric.NewView(
 				sdkmetric.Instrument{Name: "http.server.request.duration", Kind: sdkmetric.InstrumentKindHistogram},
 				sdkmetric.Stream{
 					Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
 						Boundaries: []float64{0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10},
+					},
+				},
+			),
+		),
+		sdkmetric.WithView(
+			// Sub-second-resolution buckets for the queue lag histogram; the
+			// default buckets are too coarse and inflate the queue-wait SLI.
+			sdkmetric.NewView(
+				sdkmetric.Instrument{Name: "queue.processing.lag", Kind: sdkmetric.InstrumentKindHistogram},
+				sdkmetric.Stream{
+					Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+						Boundaries: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+					},
+				},
+			),
+		),
+		sdkmetric.WithView(
+			// Fine, milliseconds-resolution buckets for DB query latency. The
+			// default coarse buckets dump nearly all queries into [0,5), so the
+			// p95 reads ~4.75s — a pure artifact (true mean is ~18ms). These
+			// boundaries (1ms..2.5s) make the db.query.duration p95 meaningful.
+			sdkmetric.NewView(
+				sdkmetric.Instrument{Name: "db.query.duration", Kind: sdkmetric.InstrumentKindHistogram},
+				sdkmetric.Stream{
+					Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+						Boundaries: []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5},
 					},
 				},
 			),
@@ -242,6 +295,11 @@ func initBusinessMetrics(m *Metrics, meter metric.Meter, logger *zap.Logger) {
 	if err != nil {
 		logger.Sugar().Fatalf("Failed to create asset size histogram: %v", err)
 	}
+	m.TenantThrottleTotal, err = meter.Int64Counter("tenant.throttle.total",
+		metric.WithDescription("Per-tenant edge rejections (rate limit / quota)"), metric.WithUnit("{rejection}"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create tenant throttle counter: %v", err)
+	}
 }
 
 func initStorageMetrics(m *Metrics, meter metric.Meter, logger *zap.Logger) {
@@ -280,15 +338,30 @@ func initDatabaseMetrics(m *Metrics, meter metric.Meter, logger *zap.Logger) {
 	if err != nil {
 		logger.Sugar().Fatalf("Failed to create DB query errors: %v", err)
 	}
-	m.DBConnectionsActive, err = meter.Int64UpDownCounter("db.connections.active",
-		metric.WithDescription("Number of active database connections"), metric.WithUnit("{connection}"))
+	m.DBConnectionsActive, err = meter.Int64ObservableGauge("db.connections.active",
+		metric.WithDescription("Number of in-use database connections"), metric.WithUnit("{connection}"))
 	if err != nil {
 		logger.Sugar().Fatalf("Failed to create DB active connections: %v", err)
 	}
-	m.DBConnectionsIdle, err = meter.Int64UpDownCounter("db.connections.idle",
+	m.DBConnectionsIdle, err = meter.Int64ObservableGauge("db.connections.idle",
 		metric.WithDescription("Number of idle database connections"), metric.WithUnit("{connection}"))
 	if err != nil {
 		logger.Sugar().Fatalf("Failed to create DB idle connections: %v", err)
+	}
+	m.DBConnectionsOpen, err = meter.Int64ObservableGauge("db.connections.open",
+		metric.WithDescription("Number of open database connections (in-use + idle)"), metric.WithUnit("{connection}"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create DB open connections: %v", err)
+	}
+	m.DBConnectionsMaxOpen, err = meter.Int64ObservableGauge("db.connections.max_open",
+		metric.WithDescription("Configured max open database connections (0 = unlimited)"), metric.WithUnit("{connection}"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create DB max open connections: %v", err)
+	}
+	m.DBConnectionsWaitCount, err = meter.Int64ObservableGauge("db.connections.wait_count",
+		metric.WithDescription("Cumulative count of connection waits (pool contention)"), metric.WithUnit("{wait}"))
+	if err != nil {
+		logger.Sugar().Fatalf("Failed to create DB wait count: %v", err)
 	}
 	m.DBTransactionTotal, err = meter.Int64Counter("db.transaction.total",
 		metric.WithDescription("Total number of database transactions"), metric.WithUnit("{transaction}"))

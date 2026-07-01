@@ -9,6 +9,11 @@ global:
     cluster: 'mpiper-local'
     environment: 'development'
 
+# SLO recording rules (Track 3, Phase 3). Mounted into the container at
+# /etc/prometheus/ alongside this file by docker-compose.observability.yml.
+rule_files:
+  - /etc/prometheus/prometheus.rules.yml
+
 # Alertmanager configuration (optional)
 # alerting:
 #   alertmanagers:

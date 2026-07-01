@@ -32,8 +32,8 @@ func NewOutboxRepository(db *sqlx.DB, logger *zap.Logger) OutboxRepository {
 
 func (r *outboxRepo) InsertTx(ctx context.Context, tx *sql.Tx, event models.OutboxEvent) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO event_outbox (aggregate_id, job_id, event, payload, max_attempts) VALUES ($1, $2, $3, $4, $5)`,
-		event.AggregateID, event.JobID, event.Event, event.Payload, event.MaxAttempts,
+		`INSERT INTO event_outbox (aggregate_id, job_id, event, payload, traceparent, max_attempts) VALUES ($1, $2, $3, $4, $5, $6)`,
+		event.AggregateID, event.JobID, event.Event, event.Payload, event.Traceparent, event.MaxAttempts,
 	)
 	return err
 }
@@ -41,7 +41,7 @@ func (r *outboxRepo) InsertTx(ctx context.Context, tx *sql.Tx, event models.Outb
 func (r *outboxRepo) FetchPendingBatch(ctx context.Context, limit int) ([]models.OutboxEvent, error) {
 	var rows []models.OutboxEvent
 	err := r.db.SelectContext(ctx, &rows,
-		`SELECT id, aggregate_id, job_id, event, payload, status, attempts, max_attempts, last_error, created_at, published_at
+		`SELECT id, aggregate_id, job_id, event, payload, traceparent, status, attempts, max_attempts, last_error, created_at, published_at
 		 FROM event_outbox WHERE status = 'pending' ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
 	return rows, err
 }

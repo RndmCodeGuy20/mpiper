@@ -37,6 +37,12 @@ func WriteErrorResponse(w http.ResponseWriter, err error) {
 		apiErr = e.ApiError
 	case *errors.ConflictError:
 		apiErr = e.ApiError
+	case *errors.UnprocessableEntityError:
+		apiErr = e.ApiError
+	case *errors.ForbiddenError:
+		apiErr = e.ApiError
+	case *errors.TooManyRequestsError:
+		apiErr = e.ApiError
 	default:
 		apiErr = &errors.ApiError{
 			Message:    "Internal server error",

@@ -3,8 +3,6 @@ package router
 import (
 	"math/rand"
 	"net/http"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -13,13 +11,12 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/rndmcodeguy20/mpiper/internal/config"
 	"github.com/rndmcodeguy20/mpiper/internal/handler"
-	appMiddleware "github.com/rndmcodeguy20/mpiper/internal/middleware"
 	"github.com/rndmcodeguy20/mpiper/internal/metrics"
+	appMiddleware "github.com/rndmcodeguy20/mpiper/internal/middleware"
 	"github.com/rndmcodeguy20/mpiper/internal/repository"
 	"github.com/rndmcodeguy20/mpiper/internal/service"
 	applogger "github.com/rndmcodeguy20/mpiper/pkg/logger"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils"
-	"golang.org/x/time/rate"
 )
 
 const (
@@ -27,56 +24,8 @@ const (
 	MiddlewareTimeout = 30 * time.Second
 )
 
-// presignRateLimiter returns a per-IP rate-limit middleware.
-// Each IP is allowed 10 requests/s with a burst of 20.
-func presignRateLimiter() func(http.Handler) http.Handler {
-	type entry struct {
-		lim      *rate.Limiter
-		lastSeen time.Time
-	}
-	var (
-		mu      sync.Mutex
-		clients = make(map[string]*entry)
-	)
-	// Evict IPs not seen in the last 5 minutes to prevent unbounded growth.
-	go func() {
-		for range time.Tick(time.Minute) {
-			mu.Lock()
-			for ip, e := range clients {
-				if time.Since(e.lastSeen) > 5*time.Minute {
-					delete(clients, ip)
-				}
-			}
-			mu.Unlock()
-		}
-	}()
-
-	getLimiter := func(ip string) *rate.Limiter {
-		mu.Lock()
-		defer mu.Unlock()
-		e, ok := clients[ip]
-		if !ok {
-			e = &entry{lim: rate.NewLimiter(rate.Limit(10), 20)}
-			clients[ip] = e
-		}
-		e.lastSeen = time.Now()
-		return e.lim
-	}
-
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := r.RemoteAddr
-			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-				ip = strings.SplitN(xff, ",", 2)[0]
-			}
-			if !getLimiter(strings.TrimSpace(ip)).Allow() {
-				http.Error(w, `{"status":"error","message":"rate limit exceeded"}`, http.StatusTooManyRequests)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
+// presignRateLimiter removed: per-tenant rate limiting now lives in
+// middleware.TenantRateLimitMiddleware (keyed by tenant id, not IP).
 
 func NewRouter(cfg config.EnvConfig, db *sqlx.DB, m *metrics.Metrics) *chi.Mux {
 	r := chi.NewRouter()
@@ -105,9 +54,9 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB, m *metrics.Metrics) *chi.Mux {
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
+	r.Use(appMiddleware.TracingMiddleware)
 	r.Use(appMiddleware.LoggerMiddleware(logger))
 	r.Use(middleware.Timeout(MiddlewareTimeout))
-	r.Use(appMiddleware.TracingMiddleware)
 	r.Use(appMiddleware.MetricsMiddleware(m))
 	r.Use(middleware.Compress(5))
 	r.Use(appMiddleware.SlowRequestMiddleware(logger, 2*time.Second))
@@ -116,6 +65,9 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB, m *metrics.Metrics) *chi.Mux {
 	outboxRepo := repository.NewOutboxRepository(db, logger)
 	assetSvc := service.NewAssetService(assetRepo, outboxRepo, logger, m)
 	assetHandler := handler.NewAssetHandler(assetSvc, logger, m)
+	apiKeyRepo := repository.NewAPIKeyRepository(db, logger)
+	idempotencyRepo := repository.NewIdempotencyRepository(db, logger)
+	idempotencyTTL := config.MustGet().IdempotencyTTL
 
 	// Routes
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
@@ -148,17 +100,22 @@ func NewRouter(cfg config.EnvConfig, db *sqlx.DB, m *metrics.Metrics) *chi.Mux {
 		})
 
 		r.Route("/storage", func(r chi.Router) {
-			r.Use(appMiddleware.AuthMiddleware(logger))
-			r.With(presignRateLimiter()).Post("/presign", assetHandler.CreateAsset)
+			quotaCfg := config.MustGet().Quota
+			r.Use(appMiddleware.AuthMiddleware(logger, apiKeyRepo))
+			r.Use(appMiddleware.IdempotencyMiddleware(logger, idempotencyRepo, idempotencyTTL))
+			r.Use(appMiddleware.TenantRateLimitMiddleware(logger, m, quotaCfg.RateLimitRPS, quotaCfg.RateLimitBurst))
+			r.Use(appMiddleware.TenantQuotaMiddleware(logger, m, assetRepo, quotaCfg.AssetQuota))
+			r.Post("/presign", assetHandler.CreateAsset)
 		})
 
 		r.Route("/assets", func(r chi.Router) {
-			r.Use(appMiddleware.AuthMiddleware(logger))
+			r.Use(appMiddleware.AuthMiddleware(logger, apiKeyRepo))
+			r.Use(appMiddleware.IdempotencyMiddleware(logger, idempotencyRepo, idempotencyTTL))
 			r.Get("/{assetID}/complete", assetHandler.MarkAssetUploaded)
 		})
 
 		r.Route("/webhooks", func(r chi.Router) {
-			r.Use(appMiddleware.AuthMiddleware(logger))
+			r.Use(appMiddleware.AuthMiddleware(logger, apiKeyRepo))
 			webhookRepo := repository.NewWebhookRepository(db, logger)
 			webhookSvc := service.NewWebhookService(webhookRepo, logger)
 			webhookHandler := handler.NewWebhookHandler(webhookSvc, logger)

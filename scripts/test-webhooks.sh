@@ -10,32 +10,24 @@ set -euo pipefail
 
 API="http://localhost:5010"
 WEBHOOK_RECEIVER="http://webhook-receiver:8080"  # internal docker network URL
-ENCRYPTION_KEY="${ENCRYPTION_KEY:-change_me_to_a_32_byte_secret____}"
+TENANT="${TENANT:-demo-user}"
 
-echo "=== 1. Generate auth token ==="
-# Create a token for user "demo-user" using the same AES encryption the API uses.
-# For dev-testing, we call the API with a pre-generated token.
-TOKEN=$(python3 -c "
-import sys, os
-sys.path.insert(0, '.')
-# Simple AES-GCM token generation matching pkg/utils/crypt.go
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-import base64, os as _os
-key = b'${ENCRYPTION_KEY}'
-nonce = _os.urandom(12)
-aes = AESGCM(key)
-ct = aes.encrypt(nonce, b'demo-user', None)
-token = base64.urlsafe_b64encode(nonce + ct).rstrip(b'=').decode()
-print(token)
-" 2>/dev/null || echo "MANUAL_TOKEN_NEEDED")
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+. "$ROOT_DIR/scripts/_apikey.sh"
 
-if [ "$TOKEN" = "MANUAL_TOKEN_NEEDED" ]; then
-  echo "Could not auto-generate token. Set TOKEN env var manually."
-  echo "  export TOKEN=<your-bearer-token>"
+echo "=== 1. Mint API key ==="
+# Seed a scoped API key for the tenant directly into the containerized Postgres
+# (matches pkg/utils/apikey.go). Replaces the old inline AES token.
+TOKEN="$(mint_api_key "$TENANT")" || echo "MANUAL_TOKEN_NEEDED"
+
+if [ -z "$TOKEN" ] || [ "$TOKEN" = "MANUAL_TOKEN_NEEDED" ]; then
+  echo "Could not mint an API key. Mint one manually and set TOKEN:"
+  echo "  export TOKEN=\"\$(go run ./cmd/mint-api-key --tenant demo-user)\""
   exit 1
 fi
 
-echo "Token: ${TOKEN:0:20}..."
+echo "API key: ${TOKEN:0:20}..."
 AUTH="Authorization: Bearer $TOKEN"
 
 echo ""

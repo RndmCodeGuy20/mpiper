@@ -55,3 +55,6 @@ mpiper_consumer = "worker.consumer:main"
 [tool.poetry.group.dev.dependencies]
 black = "^25.12.0"
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+

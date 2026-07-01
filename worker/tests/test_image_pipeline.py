@@ -66,6 +66,7 @@ class TestProcessImageFile(unittest.TestCase):
         # ---------------------
         process_image_file(
             asset_id="test-123",
+            owner_id="tenant-1",
             local_raw_path="dummy.jpg",
             content_hash="deadbeef",
             pg_pool=mock_pg_pool,
@@ -86,7 +87,7 @@ class TestProcessImageFile(unittest.TestCase):
         # 3. Storage upload was called for all 3 variants
         self.assertEqual(len(storage.calls), 3)
         for key, size, content_type in storage.calls:
-            self.assertIn("media/processed/test-123/", key)
+            self.assertIn("media/tenant-1/processed/test-123/", key)
             self.assertTrue(size > 0)
             self.assertIn("image/", content_type)
 

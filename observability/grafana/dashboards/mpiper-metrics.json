@@ -38,7 +38,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -87,7 +87,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "rate(mpiper_http_server_request_count_total[5m])",
           "refId": "A"
@@ -99,7 +99,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -152,9 +152,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, rate(mpiper_http_server_request_duration_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, rate(mpiper_http_server_request_duration_seconds_bucket[5m]))",
           "refId": "A"
         }
       ],
@@ -164,7 +164,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -238,7 +238,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "mpiper_http_server_active_requests",
           "refId": "A"
@@ -250,7 +250,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -299,9 +299,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
-          "expr": "rate(mpiper_http_server_request_count_total{status_code=~\"5..\"}[5m]) / rate(mpiper_http_server_request_count_total[5m])",
+          "expr": "rate(mpiper_http_server_request_count_total{http_status_code=~\"5..\"}[5m]) / rate(mpiper_http_server_request_count_total[5m])",
           "refId": "A"
         }
       ],
@@ -324,7 +324,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -398,27 +398,27 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, rate(mpiper_http_server_request_duration_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(mpiper_http_server_request_duration_seconds_bucket[5m]))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, rate(mpiper_http_server_request_duration_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, rate(mpiper_http_server_request_duration_seconds_bucket[5m]))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, rate(mpiper_http_server_request_duration_bucket[5m]))",
+          "expr": "histogram_quantile(0.99, rate(mpiper_http_server_request_duration_seconds_bucket[5m]))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -429,7 +429,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -503,27 +503,27 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
-          "expr": "rate(mpiper_http_server_request_count_total{status_code=~\"2..\"}[5m])",
+          "expr": "rate(mpiper_http_server_request_count_total{http_status_code=~\"2..\"}[5m])",
           "legendFormat": "2xx - {{method}} {{path}}",
           "refId": "A"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
-          "expr": "rate(mpiper_http_server_request_count_total{status_code=~\"4..\"}[5m])",
+          "expr": "rate(mpiper_http_server_request_count_total{http_status_code=~\"4..\"}[5m])",
           "legendFormat": "4xx - {{method}} {{path}}",
           "refId": "B"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
-          "expr": "rate(mpiper_http_server_request_count_total{status_code=~\"5..\"}[5m])",
+          "expr": "rate(mpiper_http_server_request_count_total{http_status_code=~\"5..\"}[5m])",
           "legendFormat": "5xx - {{method}} {{path}}",
           "refId": "C"
         }
@@ -547,7 +547,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -621,7 +621,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "rate(mpiper_asset_upload_total[5m])",
           "legendFormat": "Uploads",
@@ -630,7 +630,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "rate(mpiper_asset_processing_success_total[5m])",
           "legendFormat": "Success",
@@ -639,7 +639,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "rate(mpiper_asset_processing_failed_total[5m])",
           "legendFormat": "Failed",
@@ -652,7 +652,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -726,7 +726,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "histogram_quantile(0.95, rate(mpiper_asset_upload_duration_bucket[5m]))",
           "legendFormat": "Upload p95",
@@ -735,7 +735,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "histogram_quantile(0.95, rate(mpiper_asset_processing_duration_bucket[5m]))",
           "legendFormat": "Processing p95",
@@ -748,7 +748,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -791,7 +791,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "histogram_quantile(0.50, rate(mpiper_asset_size_bucket[5m]))",
           "legendFormat": "p50",
@@ -800,7 +800,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "histogram_quantile(0.95, rate(mpiper_asset_size_bucket[5m]))",
           "legendFormat": "p95",
@@ -809,7 +809,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "histogram_quantile(0.99, rate(mpiper_asset_size_bucket[5m]))",
           "legendFormat": "p99",
@@ -835,7 +835,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -909,7 +909,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "histogram_quantile(0.50, rate(mpiper_db_query_duration_bucket[5m]))",
           "legendFormat": "p50",
@@ -918,7 +918,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "histogram_quantile(0.95, rate(mpiper_db_query_duration_bucket[5m]))",
           "legendFormat": "p95",
@@ -927,7 +927,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "histogram_quantile(0.99, rate(mpiper_db_query_duration_bucket[5m]))",
           "legendFormat": "p99",
@@ -940,7 +940,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -1014,7 +1014,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "mpiper_db_connections_active",
           "legendFormat": "Active",
@@ -1023,7 +1023,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "mpiper_db_connections_idle",
           "legendFormat": "Idle",
@@ -1036,7 +1036,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -1129,7 +1129,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "rate(mpiper_db_query_success_total[5m])",
           "legendFormat": "Success",
@@ -1138,7 +1138,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "prometheus"
           },
           "expr": "rate(mpiper_db_query_failed_total[5m])",
           "legendFormat": "Errors",

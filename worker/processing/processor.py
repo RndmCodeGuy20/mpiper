@@ -1,5 +1,8 @@
 import os
+import time
 from enum import Enum
+
+from opentelemetry import trace
 
 from worker.consumer.config import WorkerConfig
 from worker.consumer.db import PgPool
@@ -8,8 +11,10 @@ from worker.processing.videos import process_video_file
 from worker.storage.base import StorageX
 from worker.utils.hash import compute_file_hash
 from worker.utils.logger import get_logger
+from worker.utils import metrics as wm
 
 logger = get_logger(__name__)
+tracer = trace.get_tracer("worker.processing")
 
 
 class AssetStatus(Enum):
@@ -133,88 +138,122 @@ def process_asset_dispatch(
     """
     Main entry point for asset processing with deduplication.
     """
-    # 1. Load asset metadata
-    with pg_pool.get_pg_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT asset_id, type, status, original_url, mime_type, content_hash
-            FROM assets
-            WHERE asset_id = %s
-            """,
-            (asset_id,),
-        )
-        row = cur.fetchone()
-        if not row:
-            raise RuntimeError(f"Asset not found: {asset_id}")
+    with tracer.start_as_current_span("process.dispatch") as span:
+        # asset_id is fine as a span attribute (high cardinality is OK on traces),
+        # but must NEVER become a metric label.
+        span.set_attribute("asset_id", asset_id)
 
-        _, typ, status, original_url, mime_type, content_hash = row
-
-    # 2. Early exit if already processed
-    if status in (AssetStatus.READY.value, AssetStatus.DUPLICATE.value):
-        logger.info("Asset %s already in final state: %s", asset_id, status)
-        return
-
-    # 3. Proceed with processing
-    local_raw_file = None
-    try:
-        # Mark as processing
+        # 1. Load asset metadata
         with pg_pool.get_pg_conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                "UPDATE assets SET status = %s WHERE asset_id = %s",
-                (AssetStatus.PROCESSING.value, asset_id)
+                """
+                SELECT asset_id, type, status, original_url, mime_type, content_hash, owner_id
+                FROM assets
+                WHERE asset_id = %s
+                """,
+                (asset_id,),
             )
+            row = cur.fetchone()
+            if not row:
+                raise RuntimeError(f"Asset not found: {asset_id}")
 
-        # Download raw file
-        raw_key = f"media/raw/{asset_id}"
-        tmp_dir = cfg.temp_dir
-        os.makedirs(tmp_dir, exist_ok=True)
-        local_raw_file = os.path.join(
-            tmp_dir, f"{asset_id}-raw.{get_extension_for_mime(mime_type)}"
-        )
-        storage.download_to_file(raw_key, local_raw_file)
+            _, typ, status, original_url, mime_type, content_hash, owner_id = row
 
-        content_hash = compute_file_hash(local_raw_file)
+        if not owner_id:
+            raise RuntimeError(f"Asset has no owner: {asset_id}")
 
-        # Check for duplicate using the actual downloaded file's hash
-        if content_hash:
-            dedup_result = check_for_duplicate(content_hash, asset_id, pg_pool)
+        span.set_attribute("asset.type", typ or "unknown")
+        span.set_attribute("asset.status", status or "unknown")
 
-            if dedup_result == DedupResult.DUPLICATE_READY:
-                logger.info("Asset %s deduplicated successfully", asset_id)
-                return
-            elif dedup_result == DedupResult.DUPLICATE_PENDING:
-                raise RetryableException(
-                    f"Canonical asset for {asset_id} not ready yet"
+        # 2. Early exit if already processed
+        if status in (AssetStatus.READY.value, AssetStatus.DUPLICATE.value):
+            logger.info("Asset %s already in final state: %s", asset_id, status)
+            span.set_attribute("dispatch.short_circuit", "already_final")
+            return
+
+        # 3. Proceed with processing
+        local_raw_file = None
+        proc_start = time.time()
+        try:
+            # Mark as processing
+            with pg_pool.get_pg_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE assets SET status = %s WHERE asset_id = %s",
+                    (AssetStatus.PROCESSING.value, asset_id)
                 )
 
-        # Process based on type
-        if typ == "image":
-            process_image_file(
-                asset_id, local_raw_file, content_hash, pg_pool, storage, cfg
+            # Download raw file
+            raw_key = f"media/{owner_id}/raw/{asset_id}"
+            tmp_dir = cfg.temp_dir
+            os.makedirs(tmp_dir, exist_ok=True)
+            local_raw_file = os.path.join(
+                tmp_dir, f"{asset_id}-raw.{get_extension_for_mime(mime_type)}"
             )
-        elif typ == "video":
-            process_video_file(
-                asset_id, local_raw_file, content_hash, pg_pool, storage, cfg
-            )
-        else:
-            raise ValueError(f"Unknown asset type: {typ}")
+            with tracer.start_as_current_span("process.download") as dl_span:
+                dl_span.set_attribute("asset_id", asset_id)
+                dl_span.set_attribute("storage.key", raw_key)
+                storage.download_to_file(raw_key, local_raw_file)
+                try:
+                    dl_span.set_attribute(
+                        "download.size_bytes", os.path.getsize(local_raw_file)
+                    )
+                except OSError:
+                    pass
 
-    except Exception as e:
-        # Do not touch assets.status here. The consumer (_handle_job) owns the
-        # asset state transition: it marks the asset failed only after the retry
-        # cap is hit, and ready on success. Writing 'failed' on every exception
-        # — including RetryableException — left the asset stuck failed across
-        # retries even though the job was still pending. See DEV-34.
-        logger.error("Failed to process asset %s: %s", asset_id, e, exc_info=True)
-        raise
-    finally:
-        if local_raw_file and os.path.exists(local_raw_file):
-            try:
-                os.unlink(local_raw_file)
-            except OSError:
-                logger.warning("Failed to delete temp file %s", local_raw_file)
+            content_hash = compute_file_hash(local_raw_file)
+
+            # Check for duplicate using the actual downloaded file's hash
+            if content_hash:
+                with tracer.start_as_current_span("process.dedup_check") as dd_span:
+                    dd_span.set_attribute("asset_id", asset_id)
+                    dd_span.set_attribute("content_hash", content_hash)
+                    dedup_result = check_for_duplicate(content_hash, asset_id, pg_pool)
+                    dd_span.set_attribute("dedup.result", dedup_result.value)
+
+                if dedup_result == DedupResult.DUPLICATE_READY:
+                    logger.info("Asset %s deduplicated successfully", asset_id)
+                    span.set_attribute("dispatch.short_circuit", "deduplicated")
+                    return
+                elif dedup_result == DedupResult.DUPLICATE_PENDING:
+                    raise RetryableException(
+                        f"Canonical asset for {asset_id} not ready yet"
+                    )
+
+            # Process based on type
+            proc_start = time.time()
+            if typ == "image":
+                process_image_file(
+                    asset_id, owner_id, local_raw_file, content_hash, pg_pool, storage, cfg
+                )
+            elif typ == "video":
+                process_video_file(
+                    asset_id, owner_id, local_raw_file, content_hash, pg_pool, storage, cfg
+                )
+            else:
+                raise ValueError(f"Unknown asset type: {typ}")
+
+            # Asset processing duration, labelled by type only (low cardinality).
+            # Feeds the image/video "ready latency" SLIs. asset_id stays a span
+            # attribute, never a metric label.
+            wm.record_asset(typ, time.time() - proc_start, success=True)
+
+        except Exception as e:
+            # Do not touch assets.status here. The consumer (_handle_job) owns the
+            # asset state transition: it marks the asset failed only after the retry
+            # cap is hit, and ready on success. Writing 'failed' on every exception
+            # — including RetryableException — left the asset stuck failed across
+            # retries even though the job was still pending. See DEV-34.
+            logger.error("Failed to process asset %s: %s", asset_id, e, exc_info=True)
+            wm.record_asset(typ, time.time() - proc_start, success=False)
+            raise
+        finally:
+            if local_raw_file and os.path.exists(local_raw_file):
+                try:
+                    os.unlink(local_raw_file)
+                except OSError:
+                    logger.warning("Failed to delete temp file %s", local_raw_file)
 
 
 def clone_image_variants(cur, canonical_asset_id: str, new_asset_id: str) -> int:

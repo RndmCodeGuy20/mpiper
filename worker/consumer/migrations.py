@@ -31,8 +31,23 @@ def _migration_files(migrations_dir: Path):
     return result
 
 
-def run_migrations(dsn: str, migrations_dir: str | None = None) -> None:
-    """Apply all pending migrations from migrations_dir against the given DSN."""
+# Versions that drop or alter existing user data. They must be opted into
+# explicitly via allow_destructive=True (driven by MIGRATION_ALLOW_DESTRUCTIVE)
+# so a fresh database bootstrap never silently wipes data.
+_DESTRUCTIVE_VERSIONS = {7, 8}
+
+
+def run_migrations(
+    dsn: str,
+    migrations_dir: str | None = None,
+    allow_destructive: bool = False,
+) -> None:
+    """Apply all pending migrations from migrations_dir against the given DSN.
+
+    Destructive migrations (versions 7 and 8) are refused unless
+    allow_destructive=True; the check runs against the file-system pending
+    list before any database connection is opened.
+    """
     if migrations_dir is None:
         migrations_dir = os.getenv(
             "MIGRATIONS_DIR",
@@ -43,12 +58,25 @@ def run_migrations(dsn: str, migrations_dir: str | None = None) -> None:
     if not path.is_dir():
         raise RuntimeError(f"Migrations directory not found: {path}")
 
+    pending = _migration_files(path)
+
+    if not allow_destructive:
+        # Filenames are zero-padded ("000007_…") but _DESTRUCTIVE_VERSIONS is
+        # expressed in canonical numeric form; normalise via int() so either
+        # padding compares equal.
+        destructive_pending = sorted(
+            {v for v, _ in pending if int(v) in _DESTRUCTIVE_VERSIONS}
+        )
+        if destructive_pending:
+            raise RuntimeError(
+                f"destructive migrations {destructive_pending} are pending. "
+                f"Set MIGRATION_ALLOW_DESTRUCTIVE=true to apply them"
+            )
+
     with psycopg.connect(dsn) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute(_TRACKING_TABLE)
-
-        pending = _migration_files(path)
 
         for version, sql_file in pending:
             with conn.cursor() as cur:

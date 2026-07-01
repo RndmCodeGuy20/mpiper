@@ -57,8 +57,11 @@ datasources:
     url: http://loki:3100
     jsonData:
       derivedFields:
+        # Match trace_id across formats: worker (trace_id=abc), API JSON
+        # ("trace_id":"abc"), and API dev pretty (trace_id: abc). \W+ swallows
+        # the separator (=, ":", ": ") between the key and the hex value.
         - datasourceUid: tempo
-          matcherRegex: "trace_id=(\\w+)"
+          matcherRegex: "trace_id\\W+(\\w+)"
           name: TraceID
           url: '$${__value.raw}'
     editable: true

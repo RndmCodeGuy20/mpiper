@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -100,7 +101,7 @@ func main() {
 
 	if cfg.AutoMigrate {
 		baseLogger.Info("AUTO_MIGRATE=true: running migrations")
-		if err := database.RunMigrations(db.DB); err != nil {
+		if err := database.RunMigrations(db.DB, cfg.MigrationAllowDestructive); err != nil {
 			baseLogger.Sugar().Fatalf("Migration failed: %v", err)
 		}
 		baseLogger.Info("Migrations applied successfully")
@@ -125,6 +126,13 @@ func main() {
 	_ = m.RegisterOutboxPendingFunc(func(ctx context.Context) (int64, error) {
 		return outboxRepo.CountPending(ctx)
 	})
+
+	// Observe the database connection-pool stats (in-use / idle / open / max /
+	// wait count). sqlx.DB embeds *sql.DB, so db.Stats() exposes pool saturation
+	// — the key signal for whether the DB pool is a bottleneck under load.
+	_ = m.RegisterDBStatsFunc(func() sql.DBStats {
+		return db.Stats()
+	})
 	go relay.Start(serverCtx)
 	go relay.StartCleanup(serverCtx, cfg.Outbox.Retention)
 
@@ -134,9 +142,10 @@ func main() {
 		BatchSize:     cfg.Webhook.BatchSize,
 		Timeout:       cfg.Webhook.Timeout,
 		MaxAttempts:   cfg.Webhook.MaxAttempts,
-		EncryptionKey: cfg.EncryptionKey,
+		EncryptionKey: cfg.WebhookEncryptionKey,
 		Retention:     cfg.Webhook.Retention,
-	})
+		Concurrency:   cfg.Webhook.Concurrency,
+	}, m)
 	go webhookDispatcher.Start(serverCtx)
 	go webhookDispatcher.StartCleanup(serverCtx)
 
@@ -145,6 +154,31 @@ func main() {
 		err := db.GetContext(ctx, &count, `SELECT COUNT(*) FROM webhook_deliveries WHERE status = 'pending'`)
 		return count, err
 	})
+
+	// --- Idempotency key TTL sweep ---
+	// Periodically purge expired idempotency keys so the table doesn't grow
+	// unbounded. Interval is a fraction of the TTL (min 1 minute).
+	idempotencyRepo := repository.NewIdempotencyRepository(db, baseLogger)
+	go func() {
+		interval := cfg.IdempotencyTTL / 24
+		if interval < time.Minute {
+			interval = time.Minute
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-serverCtx.Done():
+				return
+			case <-ticker.C:
+				if n, err := idempotencyRepo.DeleteExpired(serverCtx); err != nil {
+					baseLogger.Sugar().Errorf("idempotency sweep failed: %v", err)
+				} else if n > 0 {
+					baseLogger.Sugar().Infof("idempotency sweep: deleted %d expired keys", n)
+				}
+			}
+		}
+	}()
 
 	srv := server.NewServer(db, cfg, m)
 	go func() {

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/rndmcodeguy20/mpiper/internal/config"
 	"github.com/rndmcodeguy20/mpiper/internal/middleware"
 	"github.com/rndmcodeguy20/mpiper/internal/repository"
+	apperrors "github.com/rndmcodeguy20/mpiper/pkg/errors"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils"
 	"go.uber.org/zap"
 )
@@ -37,26 +39,26 @@ func NewWebhookService(repo repository.WebhookRepository, logger *zap.Logger) We
 
 func (s *webhookService) Create(ctx context.Context, reqURL, secret string, events []string) (*repository.WebhookRegistration, error) {
 	if _, err := url.ParseRequestURI(reqURL); err != nil {
-		return nil, fmt.Errorf("invalid url: %w", err)
+		return nil, apperrors.NewBadRequestError("invalid url", err)
 	}
 	if secret == "" {
-		return nil, fmt.Errorf("secret is required")
+		return nil, apperrors.NewBadRequestError("secret is required", nil)
 	}
 	if len(events) == 0 {
-		return nil, fmt.Errorf("at least one event is required")
+		return nil, apperrors.NewBadRequestError("at least one event is required", nil)
 	}
 	for _, e := range events {
 		if !validEvents[e] {
-			return nil, fmt.Errorf("invalid event: %s", e)
+			return nil, apperrors.NewBadRequestError(fmt.Sprintf("invalid event: %s", e), nil)
 		}
 	}
 
-	userID, ok := middleware.GetUserID(ctx)
+	userID, ok := middleware.GetTenant(ctx)
 	if !ok || userID == "" {
-		return nil, fmt.Errorf("user_id not found in context")
+		return nil, apperrors.NewUnauthorizedError("Tenant not found", nil)
 	}
 
-	encryptedSecret, err := utils.GenerateToken(secret, config.MustGet().EncryptionKey)
+	encryptedSecret, err := utils.GenerateToken(secret, config.MustGet().WebhookEncryptionKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt secret: %w", err)
 	}
@@ -77,17 +79,23 @@ func (s *webhookService) Create(ctx context.Context, reqURL, secret string, even
 }
 
 func (s *webhookService) List(ctx context.Context) ([]repository.WebhookRegistration, error) {
-	userID, ok := middleware.GetUserID(ctx)
+	userID, ok := middleware.GetTenant(ctx)
 	if !ok || userID == "" {
-		return nil, fmt.Errorf("user_id not found in context")
+		return nil, apperrors.NewUnauthorizedError("Tenant not found", nil)
 	}
 	return s.repo.ListByUser(ctx, userID)
 }
 
 func (s *webhookService) Delete(ctx context.Context, id uuid.UUID) error {
-	userID, ok := middleware.GetUserID(ctx)
+	userID, ok := middleware.GetTenant(ctx)
 	if !ok || userID == "" {
-		return fmt.Errorf("user_id not found in context")
+		return apperrors.NewUnauthorizedError("Tenant not found", nil)
 	}
-	return s.repo.Delete(ctx, id, userID)
+	if err := s.repo.Delete(ctx, id, userID); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return apperrors.NewNotFoundError("Webhook not found", nil)
+		}
+		return err
+	}
+	return nil
 }

@@ -1,0 +1,212 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "uid": "mpiper-experiment-overview",
+  "title": "MPiper — Experiment Overview (Track 3)",
+  "description": "One pane for load experiments: k6 client load alongside server-side API/worker/queue metrics and the SLO summary.",
+  "tags": ["mpiper", "track-3", "experiment", "load"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "10s",
+  "templating": { "list": [] },
+  "panels": [
+    { "id": 100, "type": "row", "title": "Load — k6 client (host)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 } },
+    {
+      "id": 1, "type": "stat", "title": "Active VUs", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "max(k6_vus)", "legendFormat": "VUs" } ]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Throughput — iterations/s & assets submitted/s", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 6, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(k6_iterations_total[1m]))", "legendFormat": "iterations/s" },
+        { "refId": "B", "expr": "sum(rate(k6_mpiper_assets_submitted_total[1m]))", "legendFormat": "assets submitted/s" },
+        { "refId": "C", "expr": "sum(rate(k6_http_reqs_total[1m]))", "legendFormat": "http reqs/s" }
+      ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Client error rate (SLO < 1%)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.01 } ] } }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max(k6_mpiper_flow_errors_rate)", "legendFormat": "flow errors" },
+        { "refId": "B", "expr": "max(k6_http_req_failed_rate)", "legendFormat": "http failed" }
+      ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Client step latency p95 (ms)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max(k6_mpiper_presign_latency_ms_p95)", "legendFormat": "presign p95" },
+        { "refId": "B", "expr": "max(k6_mpiper_upload_latency_ms_p95)", "legendFormat": "upload p95" },
+        { "refId": "C", "expr": "max(k6_mpiper_complete_latency_ms_p95)", "legendFormat": "complete p95" }
+      ]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Client HTTP duration p95 / p99 (ms)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max(k6_http_req_duration_p95)", "legendFormat": "http_req_duration p95" },
+        { "refId": "B", "expr": "max(k6_http_req_duration_p99)", "legendFormat": "http_req_duration p99" }
+      ]
+    },
+
+    { "id": 101, "type": "row", "title": "API — server RED", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 } },
+    {
+      "id": 6, "type": "timeseries", "title": "Request rate by route (req/s)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum by (http_route) (rate(mpiper_http_server_request_count_total[1m]))", "legendFormat": "{{http_route}}" } ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Duration p95 by route (exemplars → Tempo)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sli:http_request_latency_seconds:p95", "legendFormat": "{{http_route}}", "exemplar": true } ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "In-flight requests & DB query rate", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(mpiper_http_server_active_requests)", "legendFormat": "in-flight" },
+        { "refId": "B", "expr": "sum(rate(mpiper_db_query_total[1m]))", "legendFormat": "db queries/s" }
+      ]
+    },
+
+    { "id": 102, "type": "row", "title": "Worker — saturation & service rate (μ)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 } },
+    {
+      "id": 9, "type": "timeseries", "title": "Service rate μ: consumed vs completed (jobs/s)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(mpiper_mpiper_queue_message_consumed_total[2m]))", "legendFormat": "consumed/s" },
+        { "refId": "B", "expr": "sum(rate(mpiper_mpiper_job_processing_success_total[2m]))", "legendFormat": "completed/s (μ)" }
+      ]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Asset processing p95 by type (s) — exemplars", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 23 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, asset_type) (rate(mpiper_mpiper_asset_processing_duration_seconds_bucket[5m])))", "legendFormat": "{{asset_type}} p95", "exemplar": true } ]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Asset processing mean (s) by type", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 30 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sum by (asset_type)(rate(mpiper_mpiper_asset_processing_duration_seconds_sum[5m])) / sum by (asset_type)(rate(mpiper_mpiper_asset_processing_duration_seconds_count[5m]))", "legendFormat": "{{asset_type}} mean" } ]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Job processing p95 (s)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 30 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(mpiper_mpiper_job_processing_duration_seconds_bucket[5m])))", "legendFormat": "job p95" } ]
+    },
+
+    { "id": 103, "type": "row", "title": "Pipeline funnel & backlogs", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 37 } },
+    {
+      "id": 13, "type": "timeseries", "title": "Funnel: uploaded → ready / failed (per s)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 38 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(mpiper_asset_upload_total[2m]))", "legendFormat": "uploaded/s" },
+        { "refId": "B", "expr": "sum(rate(mpiper_mpiper_asset_processing_success_total[2m]))", "legendFormat": "ready/s" },
+        { "refId": "C", "expr": "sum(rate(mpiper_mpiper_asset_processing_failed_total[2m]))", "legendFormat": "failed/s" }
+      ]
+    },
+    {
+      "id": 14, "type": "timeseries", "title": "Queue depth (Redis stream length)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 6, "x": 12, "y": 38 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 20 } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "max(mpiper_queue_depth)", "legendFormat": "queue depth" } ]
+    },
+    {
+      "id": 15, "type": "timeseries", "title": "Backlogs: outbox & webhook pending", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 38 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "max(mpiper_outbox_pending)", "legendFormat": "outbox pending" },
+        { "refId": "B", "expr": "max(mpiper_webhook_pending)", "legendFormat": "webhook pending" }
+      ]
+    },
+
+    { "id": 104, "type": "row", "title": "Queue / transport", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 } },
+    {
+      "id": 16, "type": "timeseries", "title": "Publish vs consume (msg/s)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 46 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(mpiper_queue_message_published_total[2m]))", "legendFormat": "published/s" },
+        { "refId": "B", "expr": "sum(rate(mpiper_mpiper_queue_message_consumed_total[2m]))", "legendFormat": "consumed/s" }
+      ]
+    },
+    {
+      "id": 17, "type": "timeseries", "title": "Queue wait p95 & outbox relay lag p95 (s)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 46 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "sli:queue_wait_seconds:p95", "legendFormat": "queue wait p95 (publish-side)" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(mpiper_outbox_relay_lag_seconds_bucket[5m])))", "legendFormat": "outbox relay lag p95" }
+      ]
+    },
+
+    { "id": 105, "type": "row", "title": "SLO summary (vs targets)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 53 } },
+    {
+      "id": 18, "type": "stat", "title": "Presign p95 (< 150ms)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 54 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.15 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sli:presign_latency_seconds:p95" } ]
+    },
+    {
+      "id": 19, "type": "stat", "title": "Image ready p95 (< 5s)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 54 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 5 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sli:image_ready_latency_seconds:p95" } ]
+    },
+    {
+      "id": 20, "type": "stat", "title": "Queue wait p95 (< 2s)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 54 },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 2 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sli:queue_wait_seconds:p95" } ]
+    },
+    {
+      "id": 21, "type": "stat", "title": "Job success rate (> 99%)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 54 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 0.99 } ] } }, "overrides": [] },
+      "targets": [ { "refId": "A", "expr": "sli:job_success_ratio:ratio_rate5m" } ]
+    },
+
+    { "id": 106, "type": "row", "title": "Database (connection pool & queries)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 60 } },
+    {
+      "id": 22, "type": "timeseries", "title": "Connection pool (in-use / idle / open vs max)", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 61 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "mpiper_db_connections_active", "legendFormat": "in-use" },
+        { "refId": "B", "expr": "mpiper_db_connections_idle", "legendFormat": "idle" },
+        { "refId": "C", "expr": "mpiper_db_connections_open", "legendFormat": "open" },
+        { "refId": "D", "expr": "mpiper_db_connections_max_open", "legendFormat": "max open" }
+      ]
+    },
+    {
+      "id": 23, "type": "timeseries", "title": "DB query rate (q/s), p95 latency & pool waits", "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 61 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [
+        { "matcher": { "id": "byName", "options": "query p95" }, "properties": [ { "id": "unit", "value": "s" } ] }
+      ] },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(mpiper_db_query_total[2m]))", "legendFormat": "queries/s" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(mpiper_db_query_duration_seconds_bucket[5m])))", "legendFormat": "query p95" },
+        { "refId": "C", "expr": "rate(mpiper_db_connections_wait_count[5m])", "legendFormat": "pool waits/s" }
+      ]
+    }
+  ]
+}

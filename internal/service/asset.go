@@ -14,11 +14,14 @@ import (
 	"github.com/rndmcodeguy20/mpiper/internal/middleware"
 	"github.com/rndmcodeguy20/mpiper/internal/models"
 	"github.com/rndmcodeguy20/mpiper/internal/repository"
+	apperrors "github.com/rndmcodeguy20/mpiper/pkg/errors"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils/storagex"
+	"github.com/rndmcodeguy20/mpiper/pkg/utils/tenant"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.uber.org/zap"
 )
 
@@ -86,7 +89,12 @@ func (s *assetService) CreateAsset(ctx context.Context, request models.UploadAss
 		attribute.Int64("content_length", request.Size),
 	)
 
-	objectKey := fmt.Sprintf("media/raw/%s", assetID)
+	objectKey, err := rawObjectKey(ctx, assetID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to derive tenant-scoped object key")
+		return nil, err
+	}
 
 	spanStorageCtx, spanStorage := tracer.Start(ctx, "StorageClient.GeneratePresignedURL")
 	spanStorage.SetAttributes(attribute.String("object_key", objectKey))
@@ -124,7 +132,7 @@ func (s *assetService) CreateAsset(ctx context.Context, request models.UploadAss
 
 	spanStorageCtx, spanStorage = tracer.Start(ctx, "AssetRepo.CreateAsset")
 	spanStorage.SetAttributes(attribute.String("asset_id", assetID.String()))
-	ownerID, _ := middleware.GetUserID(ctx)
+	ownerID, _ := middleware.GetTenant(ctx)
 	err = s.assetRepo.CreateAsset(spanStorageCtx, assetID, publicUrl, request.Size, repository.ToAssetTypeFromMimeType(request.ContentType), request.ContentType, ownerID)
 	spanStorage.End()
 
@@ -175,13 +183,24 @@ func (s *assetService) MarkAssetUploaded(ctx context.Context, assetID uuid.UUID)
 
 	span.SetAttributes(attribute.String("asset_id", assetID.String()))
 
-	// check if asset exists
-	objectKey := fmt.Sprintf("media/raw/%s", assetID)
-	span.SetAttributes(attribute.String("object_key", objectKey))
+	// rawObjectKey validates the tenant and builds the tenant-scoped key.
+	// It returns UnauthorizedError when the tenant is missing from context
+	// and BadRequestError when the slug is malformed.
+	objectKey, err := rawObjectKey(ctx, assetID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to derive tenant-scoped object key")
+		return err
+	}
+
+	// rawObjectKey already validated the tenant, so re-extract it only for
+	// span attributes and the repo update.
+	tenantID, _ := middleware.GetTenant(ctx)
+	span.SetAttributes(attribute.String("tenant", tenantID), attribute.String("object_key", objectKey))
 
 	ctxStorage, spanStorage := tracer.Start(ctx, "StorageClient.GetObjectAttrs")
 	spanStorage.SetAttributes(attribute.String("object_key", objectKey))
-	_, err := s.storageClient.GetObjectAttrs(ctxStorage, s.bucket, objectKey)
+	_, err = s.storageClient.GetObjectAttrs(ctxStorage, s.bucket, objectKey)
 	spanStorage.End()
 
 	if err != nil {
@@ -215,7 +234,7 @@ func (s *assetService) MarkAssetUploaded(ctx context.Context, assetID uuid.UUID)
 
 	ctxUpdate, spanUpdate := tracer.Start(ctxTx, "AssetRepo.MarkAssetUploadedTx")
 	spanUpdate.SetAttributes(attribute.String("asset_id", assetID.String()))
-	changed, err := s.assetRepo.MarkAssetUploadedTx(ctxUpdate, tx, assetID)
+	result, err := s.assetRepo.MarkAssetUploadedTx(ctxUpdate, tx, assetID, tenantID)
 	spanUpdate.End()
 
 	if err != nil {
@@ -226,7 +245,14 @@ func (s *assetService) MarkAssetUploaded(ctx context.Context, assetID uuid.UUID)
 		return err
 	}
 
-	if !changed {
+	switch result {
+	case repository.MarkNotFound:
+		// Absent or owned by another tenant — return 404 (no existence leak).
+		spanUpdate.AddEvent("Asset not found for tenant")
+		span.SetStatus(codes.Error, "Asset not found for tenant")
+		s.logger.Sugar().Infof("Asset %s not found for tenant %s", assetID, tenantID)
+		return apperrors.NewNotFoundError("Asset not found", nil)
+	case repository.MarkAlreadyUploaded:
 		spanUpdate.AddEvent("Asset already uploaded")
 		span.AddEvent("Asset already in uploaded state")
 		s.logger.Sugar().Infof("Asset %s already marked as uploaded", assetID)
@@ -258,11 +284,23 @@ func (s *assetService) MarkAssetUploaded(ctx context.Context, assetID uuid.UUID)
 		"event":     "asset_uploaded",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
+
+	// Capture the active trace context so it survives the outbox store-and-forward
+	// hop. The relay (running on a background ticker context) re-activates this
+	// before publishing to Redis, keeping the whole pipeline in one trace.
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctxOutbox, carrier)
+	var traceparent *string
+	if tp := carrier.Get("traceparent"); tp != "" {
+		traceparent = &tp
+	}
+
 	err = s.outboxRepo.InsertTx(ctxOutbox, tx, models.OutboxEvent{
 		AggregateID: assetID,
 		JobID:       jobID,
 		Event:       "asset_uploaded",
 		Payload:     payload,
+		Traceparent: traceparent,
 	})
 	spanOutbox.End()
 
@@ -305,4 +343,18 @@ func (s *assetService) MarkAssetUploaded(ctx context.Context, assetID uuid.UUID)
 
 	span.SetStatus(codes.Ok, "Asset marked as uploaded and outbox event created")
 	return nil
+}
+
+// rawObjectKey builds the tenant-scoped storage key for an asset's raw upload.
+// It centralizes tenant extraction and validation so that CreateAsset and
+// MarkAssetUploaded stay consistent.
+func rawObjectKey(ctx context.Context, assetID uuid.UUID) (string, error) {
+	tenantID, ok := middleware.GetTenant(ctx)
+	if !ok || tenantID == "" {
+		return "", apperrors.NewUnauthorizedError("Tenant not found", nil)
+	}
+	if !tenant.IsValidSlug(tenantID) {
+		return "", apperrors.NewBadRequestError("Invalid tenant identifier", nil)
+	}
+	return fmt.Sprintf("media/%s/raw/%s", tenantID, assetID), nil
 }

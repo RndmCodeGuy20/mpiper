@@ -5,15 +5,25 @@ import shutil
 import subprocess
 import tempfile
 
+from opentelemetry import trace
+
 logger = logging.getLogger("videos")
+tracer = trace.get_tracer("worker.processing.videos")
 
 
 def run(cmd: list[str]) -> None:
     """Execute ffmpeg command with error handling."""
     logger.info("ffmpeg: %s", " ".join(cmd))
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if res.returncode != 0:
-        raise RuntimeError(f"FFmpeg failed: {res.stderr.decode()}")
+    with tracer.start_as_current_span("ffmpeg.exec") as span:
+        # cmd[0] is the binary (ffmpeg/ffprobe); record it without the full
+        # argv to avoid leaking paths as high-cardinality span attributes.
+        span.set_attribute("ffmpeg.binary", cmd[0] if cmd else "")
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        span.set_attribute("ffmpeg.returncode", res.returncode)
+        if res.returncode != 0:
+            err = res.stderr.decode()
+            span.set_status(trace.StatusCode.ERROR, "ffmpeg failed")
+            raise RuntimeError(f"FFmpeg failed: {err}")
 
 
 def probe_video(local_path: str) -> dict:
@@ -42,7 +52,7 @@ def probe_video(local_path: str) -> dict:
     }
 
 
-def generate_poster(asset_id, local_raw_path, storage, cfg, pg_pool):
+def generate_poster(asset_id, owner_id, local_raw_path, storage, cfg, pg_pool):
     """Generate video poster thumbnail and store as image variant."""
     tmpdir = tempfile.mkdtemp(dir=cfg.temp_dir)
     try:
@@ -56,7 +66,7 @@ def generate_poster(asset_id, local_raw_path, storage, cfg, pg_pool):
         with open(out_path, "rb") as f:
             data = f.read()
 
-        key = f"media/processed/{asset_id}/poster.jpg"
+        key = f"media/{owner_id}/processed/{asset_id}/poster.jpg"
         storage.upload_bytes(key, data, content_type="image/jpeg")
         url = storage.public_url(key)
 
@@ -74,7 +84,7 @@ def generate_poster(asset_id, local_raw_path, storage, cfg, pg_pool):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def transcode_720p(asset_id, local_raw_path, storage, cfg, pg_pool):
+def transcode_720p(asset_id, owner_id, local_raw_path, storage, cfg, pg_pool):
     """Transcode video to 720p H.264."""
     tmpdir = tempfile.mkdtemp(dir=cfg.temp_dir)
     try:
@@ -90,7 +100,7 @@ def transcode_720p(asset_id, local_raw_path, storage, cfg, pg_pool):
         with open(out_path, "rb") as f:
             data = f.read()
 
-        key = f"media/processed/{asset_id}/transcoded.mp4"
+        key = f"media/{owner_id}/processed/{asset_id}/transcoded.mp4"
         storage.upload_bytes(key, data, content_type="video/mp4")
         url = storage.public_url(key)
 
@@ -108,7 +118,7 @@ def transcode_720p(asset_id, local_raw_path, storage, cfg, pg_pool):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def generate_preview(asset_id, local_raw_path, storage, cfg, pg_pool):
+def generate_preview(asset_id, owner_id, local_raw_path, storage, cfg, pg_pool):
     """Generate short muted preview clip."""
     tmpdir = tempfile.mkdtemp(dir=cfg.temp_dir)
     try:
@@ -123,7 +133,7 @@ def generate_preview(asset_id, local_raw_path, storage, cfg, pg_pool):
         with open(out_path, "rb") as f:
             data = f.read()
 
-        key = f"media/processed/{asset_id}/preview.mp4"
+        key = f"media/{owner_id}/processed/{asset_id}/preview.mp4"
         storage.upload_bytes(key, data, content_type="video/mp4")
         url = storage.public_url(key)
 
@@ -141,7 +151,7 @@ def generate_preview(asset_id, local_raw_path, storage, cfg, pg_pool):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def process_video_file(asset_id, local_raw_path, content_hash, pg_pool, storage, cfg):
+def process_video_file(asset_id, owner_id, local_raw_path, content_hash, pg_pool, storage, cfg):
     """Main video processing pipeline."""
     logger.info("Processing video asset %s", asset_id)
 
@@ -152,9 +162,14 @@ def process_video_file(asset_id, local_raw_path, content_hash, pg_pool, storage,
             (content_hash, asset_id),
         )
 
-    generate_poster(asset_id, local_raw_path, storage, cfg, pg_pool)
-    transcode_720p(asset_id, local_raw_path, storage, cfg, pg_pool)
-    generate_preview(asset_id, local_raw_path, storage, cfg, pg_pool)
+    for stage_name, fn in (
+        ("video.poster", generate_poster),
+        ("video.transcode_720p", transcode_720p),
+        ("video.preview", generate_preview),
+    ):
+        with tracer.start_as_current_span(stage_name) as span:
+            span.set_attribute("asset_id", asset_id)
+            fn(asset_id, owner_id, local_raw_path, storage, cfg, pg_pool)
 
     # Mark asset ready
     with pg_pool.get_pg_conn() as conn:

@@ -18,11 +18,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
+	"github.com/rndmcodeguy20/mpiper/internal/metrics"
 	"github.com/rndmcodeguy20/mpiper/internal/webhook"
 	"github.com/rndmcodeguy20/mpiper/pkg/utils"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.uber.org/zap"
 )
 
@@ -111,6 +113,7 @@ func TestDispatcher_DeliversSuccessfully(t *testing.T) {
 	// Run dispatcher.
 	dispCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	m, reader := metrics.NewTestMetrics()
 	d := webhook.NewDispatcher(db, zap.NewNop(), webhook.DispatcherConfig{
 		PollInterval:  50 * time.Millisecond,
 		BatchSize:     10,
@@ -118,7 +121,7 @@ func TestDispatcher_DeliversSuccessfully(t *testing.T) {
 		MaxAttempts:   5,
 		EncryptionKey: testEncryptionKey,
 		Retention:     168 * time.Hour,
-	})
+	}, m)
 	go d.Start(dispCtx)
 
 	// Wait for delivery.
@@ -146,6 +149,30 @@ func TestDispatcher_DeliversSuccessfully(t *testing.T) {
 	_ = db.GetContext(ctx, &status, `SELECT status FROM webhook_deliveries WHERE asset_id = $1`, assetID)
 	if status != "delivered" {
 		t.Errorf("expected delivered, got %s", status)
+	}
+
+	// Verify the delivery metric was recorded with status=delivered.
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	var deliveredTotal int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, mt := range sm.Metrics {
+			if mt.Name != "webhook.delivery.total" {
+				continue
+			}
+			if sum, ok := mt.Data.(metricdata.Sum[int64]); ok {
+				for _, dp := range sum.DataPoints {
+					if v, ok := dp.Attributes.Value("status"); ok && v.AsString() == "delivered" {
+						deliveredTotal += dp.Value
+					}
+				}
+			}
+		}
+	}
+	if deliveredTotal < 1 {
+		t.Errorf("expected >=1 delivered webhook.delivery.total metric, got %d", deliveredTotal)
 	}
 }
 
@@ -182,7 +209,7 @@ func TestDispatcher_RetriesOnFailure(t *testing.T) {
 		MaxAttempts:   5,
 		EncryptionKey: testEncryptionKey,
 		Retention:     168 * time.Hour,
-	})
+	}, nil)
 	go d.Start(dispCtx)
 	time.Sleep(300 * time.Millisecond)
 	cancel()
@@ -236,7 +263,7 @@ func TestDispatcher_FailsAfterMaxAttempts(t *testing.T) {
 		MaxAttempts:   5,
 		EncryptionKey: testEncryptionKey,
 		Retention:     168 * time.Hour,
-	})
+	}, nil)
 	go d.Start(dispCtx)
 	time.Sleep(300 * time.Millisecond)
 	cancel()
@@ -245,5 +272,112 @@ func TestDispatcher_FailsAfterMaxAttempts(t *testing.T) {
 	_ = db.GetContext(ctx, &status, `SELECT status FROM webhook_deliveries WHERE asset_id = $1`, assetID)
 	if status != "failed" {
 		t.Errorf("expected failed, got %s", status)
+	}
+}
+
+// TestDispatcher_DeliversConcurrently verifies that a batch larger than the
+// concurrency limit is delivered in parallel (max in-flight > 1, bounded by the
+// limit), every delivery completes, and the delivery metric counts them all.
+func TestDispatcher_DeliversConcurrently(t *testing.T) {
+	ctx := context.Background()
+	db := setupDB(t, ctx)
+
+	encSecret, _ := utils.GenerateToken("secret", testEncryptionKey)
+
+	const total = 20
+	const concurrency = 5
+
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	var delivered atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := inFlight.Add(1)
+		for {
+			old := maxInFlight.Load()
+			if cur <= old || maxInFlight.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+		time.Sleep(60 * time.Millisecond) // hold the connection so overlap is observable
+		inFlight.Add(-1)
+		delivered.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	regID := uuid.New()
+	_, _ = db.ExecContext(ctx,
+		`INSERT INTO webhook_registrations (id, user_id, url, secret, events) VALUES ($1,$2,$3,$4,$5)`,
+		regID, "user-1", srv.URL, encSecret, `["job.done"]`)
+	for i := 0; i < total; i++ {
+		assetID := uuid.New()
+		payload, _ := json.Marshal(map[string]interface{}{"event": "job.done"})
+		_, _ = db.ExecContext(ctx,
+			`INSERT INTO webhook_deliveries (registration_id, event, asset_id, job_id, payload) VALUES ($1,$2,$3,$4,$5)`,
+			regID, "job.done", assetID, int64(i), payload)
+	}
+
+	dispCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	m, reader := metrics.NewTestMetrics()
+	d := webhook.NewDispatcher(db, zap.NewNop(), webhook.DispatcherConfig{
+		PollInterval:  50 * time.Millisecond,
+		BatchSize:     total,
+		Timeout:       5 * time.Second,
+		MaxAttempts:   5,
+		EncryptionKey: testEncryptionKey,
+		Retention:     168 * time.Hour,
+		Concurrency:   concurrency,
+	}, m)
+	go d.Start(dispCtx)
+
+	deadline := time.After(10 * time.Second)
+	for delivered.Load() < total {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout: delivered %d/%d", delivered.Load(), total)
+		default:
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	cancel()
+
+	// Parallelism actually happened, and stayed within the bound.
+	if maxInFlight.Load() < 2 {
+		t.Errorf("expected concurrent delivery (max in-flight > 1), got %d", maxInFlight.Load())
+	}
+	if maxInFlight.Load() > concurrency {
+		t.Errorf("max in-flight %d exceeded concurrency limit %d", maxInFlight.Load(), concurrency)
+	}
+
+	// All rows delivered in the DB.
+	var pending int
+	_ = db.GetContext(ctx, &pending, `SELECT count(*) FROM webhook_deliveries WHERE status != 'delivered'`)
+	if pending != 0 {
+		t.Errorf("expected 0 non-delivered rows, got %d", pending)
+	}
+
+	// Metric total counts every delivery.
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	var deliveredTotal int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, mt := range sm.Metrics {
+			if mt.Name != "webhook.delivery.total" {
+				continue
+			}
+			if sum, ok := mt.Data.(metricdata.Sum[int64]); ok {
+				for _, dp := range sum.DataPoints {
+					if v, ok := dp.Attributes.Value("status"); ok && v.AsString() == "delivered" {
+						deliveredTotal += dp.Value
+					}
+				}
+			}
+		}
+	}
+	if deliveredTotal != total {
+		t.Errorf("expected %d delivered metric, got %d", total, deliveredTotal)
 	}
 }

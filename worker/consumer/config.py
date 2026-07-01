@@ -129,9 +129,14 @@ class WorkerConfig:
     log_level: str
     auto_migrate: bool
     migrations_dir: str
+    # migration_allow_destructive gates versions 7 and 8 which drop or alter
+    # existing user data. Must be true on first bootstrap of a fresh database.
+    migration_allow_destructive: bool = False
     consumer_group: str = "worker-group"
     max_concurrent_jobs: int = 5
     job_poll_interval: int = 10
+    recovery_min_idle_ms: int = 120000
+    dlq_stream_name: str = "media:jobs:dlq"
 
     @staticmethod
     def from_env() -> "WorkerConfig":
@@ -158,11 +163,14 @@ class WorkerConfig:
             ),
             max_concurrent_jobs=int(os.getenv("MAX_CONCURRENT_JOBS", "5")),
             job_poll_interval=int(os.getenv("JOB_POLL_INTERVAL", "10")),
+            recovery_min_idle_ms=int(os.getenv("RECOVERY_MIN_IDLE_MS", "120000")),
+            dlq_stream_name=os.getenv("STREAM_DLQ_NAME", "media:jobs:dlq"),
             temp_dir=temp_dir,
             stream_name=os.getenv("STREAM_NAME", "media:jobs"),
             consumer_group=os.getenv("CONSUMER_GROUP", "worker-group"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             auto_migrate=os.getenv("AUTO_MIGRATE", "false").lower() == "true",
+            migration_allow_destructive=os.getenv("MIGRATION_ALLOW_DESTRUCTIVE", "false").lower() == "true",
             migrations_dir=os.getenv("MIGRATIONS_DIR", default_migrations_dir),
         )
 
